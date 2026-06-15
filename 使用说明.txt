@@ -1,0 +1,54 @@
+跨境电商广告投放智能分析系统
+================================
+
+【发给其他电脑使用方法】
+
+  1. 将整个 ad-analysis-tool 文件夹复制到 U 盘 / 网盘 / 微信
+  2. 在目标电脑上解压或拷贝到任意目录（路径尽量不要含中文）
+  3. 目标电脑需安装 Python 3.9 或以上：https://www.python.org/downloads/
+     - Windows：安装时勾选「Add python.exe to PATH」
+     - Mac：安装后若无法运行，见「Mac打不开请看这里.txt」
+  4. 首次运行需联网（自动下载依赖包）
+
+
+【启动】
+
+  Windows：双击 start.bat
+  Mac：    双击 start.command（或终端运行 bash start.sh）
+  Linux：  终端运行 bash start.sh
+
+  浏览器自动打开 http://localhost:8501
+
+
+【使用流程】
+
+  1. 左侧选择大模型服务商，填写 API Key
+  2. 上传 Excel 数据文件（.xlsx）
+  3. 选择报告类型、数据范围（单日 / 区间 / 周末三日）
+  4. 点击「生成 AI 分析报告」
+  5. 下载 Word / Markdown / HTML 报告
+
+
+【文件夹说明】
+
+  ad_analysis_app.py   主程序
+  requirements.txt     依赖列表
+  start.bat            Windows 启动
+  start.command        Mac 启动
+  start.sh             Mac/Linux 终端启动
+
+
+【常见问题】
+
+  Q: 提示找不到 Python？
+  A: 安装 Python 3 并确保加入 PATH，重启电脑后再试。
+
+  Q: 依赖安装失败？
+  A: 检查网络；公司网络可能需要代理。
+
+  Q: 8501 端口被占用？
+  A: 关闭其他 Streamlit 程序，或命令行指定其他端口：
+     streamlit run ad_analysis_app.py --server.port 8502
+
+  Q: API 报错？
+  A: 检查 API Key 和服务商是否匹配（Gemini / DeepSeek / OpenAI 等）。

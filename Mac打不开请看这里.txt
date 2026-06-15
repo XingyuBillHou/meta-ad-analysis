@@ -1,0 +1,15 @@
+Mac 无法双击 start.command 时：
+
+  方法一（推荐）
+  1. 打开「终端」
+  2. 输入 cd 后空格，将 ad-analysis-tool 文件夹拖入终端，回车
+  3. 输入：bash start.sh  回车
+
+  方法二
+  1. 右键 start.command → 打开 → 仍要打开
+
+  方法三
+  1. 系统设置 → 隐私与安全性 → 允许运行
+
+  若提示没有 Python：
+  前往 https://www.python.org/downloads/ 下载安装 Python 3
