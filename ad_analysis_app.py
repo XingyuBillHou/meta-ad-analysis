@@ -8,9 +8,15 @@
 import re
 import json
 import os
+import smtplib
 import tempfile
 import time
 from datetime import datetime, date, timedelta
+from email.header import Header
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import formataddr
 from io import BytesIO
 from pathlib import Path
 
@@ -483,7 +489,11 @@ def load_all_sheets(uploaded_file) -> dict:
         if engine_used != "openpyxl":
             st.info(f"ℹ️ 已使用 {engine_used} 引擎读取（原 openpyxl 无法解析该文件）。")
 
+        skipped_sheets = []
         for sheet_name in sheet_names:
+            if _is_skipped_sheet(sheet_name):
+                skipped_sheets.append(sheet_name)
+                continue
             try:
                 raw = read_raw(sheet_name)
                 df = flatten_merged_header(raw)
@@ -493,6 +503,12 @@ def load_all_sheets(uploaded_file) -> dict:
                     st.warning(f"⚠️ Sheet「{sheet_name}」为空或无法解析，已跳过。")
             except Exception as e:
                 st.warning(f"⚠️ 读取 Sheet「{sheet_name}」时发生错误，已跳过：{e}")
+
+        if skipped_sheets:
+            st.caption(
+                "ℹ️ 已自动跳过未投放账号表："
+                + "、".join(skipped_sheets)
+            )
 
     except Exception as e:
         st.error(f"❌ 文件解析失败：{e}")
@@ -1108,6 +1124,121 @@ def build_docx_bytes(report: str, meta: dict) -> bytes:
     buf = BytesIO()
     doc.save(buf)
     return buf.getvalue()
+
+
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+
+
+def _is_valid_email(addr: str) -> bool:
+    return bool(EMAIL_RE.match((addr or "").strip()))
+
+
+def _parse_email_list(text: str) -> list:
+    addrs = []
+    for part in re.split(r"[,;\s\n]+", text or ""):
+        addr = part.strip()
+        if addr and _is_valid_email(addr):
+            addrs.append(addr)
+    return addrs
+
+
+def _get_smtp_config() -> dict:
+    port_raw = _secret("email", "smtp_port") or "587"
+    try:
+        port = int(port_raw)
+    except ValueError:
+        port = 587
+    user = _secret("email", "smtp_user")
+    password = _secret("email", "smtp_password")
+    host = _secret("email", "smtp_host")
+    from_addr = _secret("email", "from_addr") or user
+    if not host or not user or not password or not from_addr:
+        return {}
+    return {
+        "host": host,
+        "port": port,
+        "user": user,
+        "password": password,
+        "from_addr": from_addr,
+        "from_name": _secret("email", "from_name") or "跨境电商广告分析报告",
+        "use_tls": _secret("email", "use_tls", default="true").lower() != "false",
+    }
+
+
+def _build_email_attachment(report: str, meta: dict, attachment_format: str):
+    base_name = _safe_report_filename(meta, "").rstrip(".")
+    if attachment_format == "html":
+        return (
+            f"{base_name}.html",
+            build_full_html(report, meta).encode("utf-8"),
+            "text/html",
+        )
+    if attachment_format == "md":
+        return (
+            f"{base_name}.md",
+            build_full_markdown(report, meta).encode("utf-8"),
+            "text/markdown",
+        )
+    return (
+        f"{base_name}.docx",
+        build_docx_bytes(report, meta),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+def send_report_email(
+    to_addrs: list,
+    report: str,
+    meta: dict,
+    attachment_format: str = "docx",
+) -> tuple:
+    """通过 SMTP 发送报告附件。返回 (成功与否, 提示信息)。"""
+    cfg = _get_smtp_config()
+    if not cfg:
+        return False, (
+            "未配置邮件服务器。请在 Streamlit Secrets 或本地 `.streamlit/secrets.toml` 中设置 "
+            "`email.smtp_host`、`email.smtp_user`、`email.smtp_password`。"
+        )
+    if not to_addrs:
+        return False, "请填写至少一个有效的收件人邮箱。"
+
+    filename, payload, mime_type = _build_email_attachment(report, meta, attachment_format)
+    subject = f"{meta.get('report_type', '分析报告')} - {meta.get('date_info', '')}"
+    generated_at = meta.get("generated_at") or datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    msg = MIMEMultipart()
+    msg["Subject"] = Header(subject, "utf-8")
+    msg["From"] = formataddr((str(Header(cfg["from_name"], "utf-8")), cfg["from_addr"]))
+    msg["To"] = ", ".join(to_addrs)
+
+    body = f"""您好，
+
+附件为自动生成的跨境电商广告投放分析报告。
+
+报告类型：{meta.get('report_type', '')}
+数据区间：{meta.get('date_info', '')}
+生成时间：{generated_at}
+
+此邮件由分析系统自动发送，请勿直接回复。
+"""
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    attachment = MIMEApplication(payload, Name=filename)
+    attachment.add_header("Content-Disposition", "attachment", filename=("utf-8", "", filename))
+    attachment.add_header("Content-Type", mime_type)
+    msg.attach(attachment)
+
+    try:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=30) as smtp:
+            if cfg["use_tls"]:
+                smtp.starttls()
+            smtp.login(cfg["user"], cfg["password"])
+            smtp.send_message(msg)
+        return True, f"✅ 报告已发送至：{', '.join(to_addrs)}"
+    except smtplib.SMTPAuthenticationError:
+        return False, "❌ SMTP 登录失败，请检查邮箱账号与授权码/密码。"
+    except Exception as e:
+        return False, f"❌ 邮件发送失败：{e}"
 
 
 def _require_ascii(value: str, field_name: str) -> str:
@@ -1787,6 +1918,44 @@ def main():
                 mime="text/html",
                 use_container_width=True,
             )
+
+        st.markdown("**发送报告到邮箱**")
+        smtp_ready = bool(_get_smtp_config())
+        default_recipients = _secret("email", "default_recipients")
+        if not smtp_ready:
+            st.info(
+                "邮件功能需在 Secrets 中配置 SMTP（`email.smtp_host` / `smtp_user` / "
+                "`smtp_password`）。示例见 `.streamlit/secrets.toml.example`。"
+            )
+
+        col_mail1, col_mail2 = st.columns([2, 1])
+        with col_mail1:
+            recipient_text = st.text_input(
+                "收件人邮箱",
+                value=default_recipients,
+                placeholder="a@company.com, b@company.com",
+                help="多个邮箱可用逗号、分号或换行分隔。",
+            )
+        with col_mail2:
+            mail_format = st.selectbox(
+                "附件格式",
+                options=["docx", "html", "md"],
+                format_func=lambda x: {"docx": "Word (.docx)", "html": "HTML (.html)", "md": "Markdown (.md)"}[x],
+            )
+
+        if st.button("📧 发送邮件", disabled=not smtp_ready, use_container_width=False):
+            recipients = _parse_email_list(recipient_text)
+            if not recipients:
+                st.error("请填写至少一个有效的收件人邮箱。")
+            else:
+                with st.spinner("正在发送邮件..."):
+                    ok, message = send_report_email(
+                        recipients, report_body, meta, attachment_format=mail_format
+                    )
+                if ok:
+                    st.success(message)
+                else:
+                    st.error(message)
 
 
 if __name__ == "__main__":
