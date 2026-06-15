@@ -10,7 +10,6 @@ import json
 import os
 import smtplib
 import ssl
-import base64
 import tempfile
 import time
 from datetime import datetime, date, timedelta
@@ -1130,12 +1129,11 @@ def build_docx_bytes(report: str, meta: dict) -> bytes:
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
-SMTP_PRESETS = {
-    "Gmail": {"host": "smtp.gmail.com", "port": 587, "use_tls": True, "use_ssl": False},
-    "QQ 邮箱": {"host": "smtp.qq.com", "port": 465, "use_tls": False, "use_ssl": True},
-    "163 邮箱": {"host": "smtp.163.com", "port": 465, "use_tls": False, "use_ssl": True},
-    "Outlook": {"host": "smtp.office365.com", "port": 587, "use_tls": True, "use_ssl": False},
-    "自定义": {"host": "", "port": 587, "use_tls": True, "use_ssl": False},
+GMAIL_SMTP = {
+    "host": "smtp.gmail.com",
+    "port": 587,
+    "use_tls": True,
+    "use_ssl": False,
 }
 
 
@@ -1155,26 +1153,12 @@ def _smtp_auth_error_hint(cfg: dict, exc: Exception) -> str:
     if "gmail.com" in host:
         base += (
             "\n\n**Gmail 请确认：**\n"
-            "1. 已开启两步验证，并使用 **应用专用密码**（不是 Google 登录密码）\n"
+            "1. 已开启两步验证，并使用 **应用专用密码**（16 位，不是 Google 登录密码）\n"
             "2. 发件邮箱与登录账号一致\n"
-            "3. 若在 Streamlit 云端部署，Gmail 可能拦截云服务器登录 — "
-            "建议改用 **Resend API** 或 **QQ/163 邮箱**"
-        )
-    elif "qq.com" in host:
-        base += (
-            "\n\n**QQ 邮箱请确认：**\n"
-            "1. 已在 QQ 邮箱设置 → 账户 中开启 SMTP 服务\n"
-            "2. 使用的是 **16 位授权码**，不是 QQ 密码\n"
-            "3. 发件邮箱填写完整地址，如 `name@qq.com`"
-        )
-    elif "163.com" in host:
-        base += (
-            "\n\n**163 邮箱请确认：**\n"
-            "1. 已在邮箱设置中开启 SMTP / POP3\n"
-            "2. 使用的是 **客户端授权码**，不是登录密码"
+            "3. 应用专用密码获取：[Google 账号 → 安全 → 应用专用密码](https://myaccount.google.com/apppasswords)"
         )
     else:
-        base += "\n\n请检查发件邮箱、授权码/密码是否正确。"
+        base += "\n\n请检查 Gmail 邮箱与应用专用密码是否正确。"
     return base
 
 
@@ -1256,8 +1240,6 @@ def _smtp_login_and_send(cfg: dict, msg: MIMEMultipart) -> None:
     host_lower = cfg["host"].lower()
     if "gmail.com" in host_lower and not cfg["use_ssl"]:
         attempts.append((cfg["host"], 465, True, False))
-    if "qq.com" in host_lower and cfg["use_ssl"]:
-        attempts.append((cfg["host"], 587, False, True))
 
     last_auth_err = None
     for host, port, use_ssl, use_tls in attempts:
@@ -1272,63 +1254,6 @@ def _smtp_login_and_send(cfg: dict, msg: MIMEMultipart) -> None:
     _smtp_connect_and_send(
         cfg["host"], cfg["port"], cfg["use_ssl"], cfg["use_tls"], user, password, msg
     )
-
-
-def _send_via_resend(
-    to_addrs: list,
-    report: str,
-    meta: dict,
-    attachment_format: str,
-    resend_api_key: str,
-    from_addr: str,
-    from_name: str,
-) -> tuple:
-    if not resend_api_key.strip():
-        return False, "请填写 Resend API Key（在 resend.com 注册后获取）。"
-    if not from_addr.strip():
-        return False, "请填写发件地址（Resend 需已验证的域名邮箱，测试可用 onboarding@resend.dev）。"
-
-    filename, payload, mime_type = _build_email_attachment(report, meta, attachment_format)
-    subject = f"{meta.get('report_type', '分析报告')} - {meta.get('date_info', '')}"
-    generated_at = meta.get("generated_at") or datetime.now().strftime("%Y-%m-%d %H:%M")
-    html_body = (
-        f"<p>您好，</p>"
-        f"<p>附件为自动生成的跨境电商广告投放分析报告。</p>"
-        f"<ul>"
-        f"<li>报告类型：{meta.get('report_type', '')}</li>"
-        f"<li>数据区间：{meta.get('date_info', '')}</li>"
-        f"<li>生成时间：{generated_at}</li>"
-        f"</ul>"
-        f"<p>完整内容请查看邮件附件。</p>"
-    )
-
-    body = {
-        "from": f"{from_name} <{from_addr.strip()}>",
-        "to": to_addrs,
-        "subject": subject,
-        "html": html_body,
-        "attachments": [{
-            "filename": filename,
-            "content": base64.b64encode(payload).decode("ascii"),
-        }],
-    }
-
-    try:
-        resp = httpx.post(
-            "https://api.resend.com/emails",
-            headers={
-                "Authorization": f"Bearer {resend_api_key.strip()}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-            timeout=30.0,
-        )
-        if resp.status_code in (200, 201):
-            return True, f"✅ 报告已通过 Resend 发送至：{', '.join(to_addrs)}"
-        detail = resp.text[:500]
-        return False, f"❌ Resend 发送失败 (HTTP {resp.status_code})：{detail}"
-    except Exception as e:
-        return False, f"❌ Resend 发送失败：{e}"
 
 
 def _build_email_attachment(report: str, meta: dict, attachment_format: str):
@@ -1358,23 +1283,12 @@ def send_report_email(
     meta: dict,
     attachment_format: str = "docx",
     smtp_override: dict = None,
-    email_method: str = "smtp",
-    resend_api_key: str = "",
-    resend_from_addr: str = "",
-    resend_from_name: str = "跨境电商广告分析报告",
 ) -> tuple:
-    """发送报告附件。返回 (成功与否, 提示信息)。"""
-    if email_method == "resend":
-        return _send_via_resend(
-            to_addrs, report, meta, attachment_format,
-            resend_api_key, resend_from_addr, resend_from_name,
-        )
-
+    """通过 Gmail SMTP 发送报告附件。返回 (成功与否, 提示信息)。"""
     cfg = _get_smtp_config(smtp_override)
     if not cfg:
         return False, (
-            "未配置邮件服务器。请在左侧侧边栏「邮件发信配置」中填写 SMTP 信息，"
-            "或在 Streamlit Secrets 中设置 email.smtp_host / smtp_user / smtp_password。"
+            "未配置 Gmail。请在左侧侧边栏「Gmail 发信配置」中填写发件邮箱与应用专用密码。"
         )
     if not to_addrs:
         return False, "请填写至少一个有效的收件人邮箱。"
@@ -1771,93 +1685,27 @@ def main():
         temperature = st.slider("Temperature（创意度）", 0.0, 1.0, 0.5, 0.1)
 
         st.markdown("---")
-        with st.expander("📧 邮件发信配置", expanded=False):
-            email_method = st.radio(
-                "发信方式",
-                options=["smtp", "resend"],
-                format_func=lambda x: "SMTP 邮箱" if x == "smtp" else "Resend API（推荐 Streamlit 云端）",
-                help="Streamlit 云端部署时，Gmail SMTP 常被拦截，建议用 Resend。",
+        with st.expander("📧 Gmail 发信配置", expanded=False):
+            st.caption("SMTP：`smtp.gmail.com`　端口：`587`")
+            gmail_user = st.text_input(
+                "Gmail 发件邮箱",
+                key="gmail_user",
+                placeholder="your@gmail.com",
+            )
+            gmail_password = st.text_input(
+                "Gmail 应用专用密码",
+                type="password",
+                key="gmail_app_password",
+                help="在 Google 账号 → 安全 → 两步验证 → 应用专用密码 中生成（16 位，不是登录密码）。",
             )
 
-            if email_method == "resend":
-                resend_api_key = st.text_input(
-                    "Resend API Key",
-                    type="password",
-                    key="resend_api_key",
-                    placeholder="re_xxxxxxxx",
-                    help="在 https://resend.com 注册获取，免费 100 封/天。",
-                )
-                resend_from = st.text_input(
-                    "发件地址",
-                    key="resend_from_addr",
-                    value=_secret("email", "resend_from") or "onboarding@resend.dev",
-                    help="测试可用 onboarding@resend.dev；正式使用需验证自己的域名。",
-                )
-                smtp_preset = "自定义"
-                smtp_host = smtp_port = smtp_user = smtp_password = smtp_from = ""
-                use_ssl = use_tls = False
-                st.caption("Resend 通过 HTTPS 发信，不依赖 SMTP，适合 Streamlit Cloud。")
-            else:
-                resend_api_key = ""
-                resend_from = ""
-                smtp_preset = st.selectbox(
-                    "邮箱类型",
-                    options=list(SMTP_PRESETS.keys()),
-                    help="Gmail/QQ/163 需使用授权码，不是登录密码。",
-                )
-                preset = SMTP_PRESETS[smtp_preset]
-                if smtp_preset == "自定义":
-                    smtp_host = st.text_input(
-                        "SMTP 服务器",
-                        key="smtp_host",
-                        placeholder="smtp.example.com",
-                    )
-                    smtp_port = st.number_input("端口", min_value=1, max_value=65535, value=587)
-                    use_ssl = st.checkbox("使用 SSL（465 端口）", value=False)
-                    use_tls = st.checkbox("使用 STARTTLS（587 端口）", value=not use_ssl)
-                else:
-                    smtp_host = preset["host"]
-                    smtp_port = preset["port"]
-                    use_ssl = preset["use_ssl"]
-                    use_tls = preset["use_tls"]
-                    st.caption(f"SMTP：`{smtp_host}`　端口：`{smtp_port}`")
-
-                smtp_user = st.text_input(
-                    "发件邮箱",
-                    key="smtp_user",
-                    placeholder="your@gmail.com",
-                )
-                smtp_password = st.text_input(
-                    "授权码 / 密码",
-                    type="password",
-                    key="smtp_password",
-                    help="Gmail：应用专用密码；QQ/163：SMTP 授权码（复制后如有空格会自动去除）。",
-                )
-                smtp_from = st.text_input(
-                    "发件地址（通常与发件邮箱相同）",
-                    key="smtp_from_addr",
-                    placeholder="与发件邮箱相同",
-                )
-
         smtp_override = {
-            "host": smtp_host if email_method == "smtp" and smtp_preset == "自定义" else (
-                SMTP_PRESETS.get(smtp_preset, {}).get("host", "") if email_method == "smtp" else ""
-            ),
-            "port": int(smtp_port) if email_method == "smtp" else 587,
-            "user": smtp_user if email_method == "smtp" else "",
-            "password": smtp_password if email_method == "smtp" else "",
-            "from_addr": (smtp_from or smtp_user) if email_method == "smtp" else "",
-            "use_tls": use_tls if email_method == "smtp" and smtp_preset == "自定义" else (
-                SMTP_PRESETS.get(smtp_preset, {}).get("use_tls", True) if email_method == "smtp" else True
-            ),
-            "use_ssl": use_ssl if email_method == "smtp" and smtp_preset == "自定义" else (
-                SMTP_PRESETS.get(smtp_preset, {}).get("use_ssl", False) if email_method == "smtp" else False
-            ),
+            **GMAIL_SMTP,
+            "user": gmail_user,
+            "password": gmail_password,
+            "from_addr": gmail_user,
         }
-        if email_method == "resend":
-            smtp_ready = bool(resend_api_key.strip() and resend_from.strip())
-        else:
-            smtp_ready = bool(_get_smtp_config(smtp_override))
+        smtp_ready = bool(_get_smtp_config(smtp_override))
 
     # ---------------- 主区：文件上传 ----------------
     uploaded_file = st.file_uploader("📁 上传广告投放数据文件 (.xlsx / .csv)", type=["xlsx", "csv"])
@@ -2088,10 +1936,7 @@ def main():
         st.markdown("**发送报告到邮箱**")
         default_recipients = _secret("email", "default_recipients")
         if not smtp_ready:
-            st.warning(
-                "请先在左侧「📧 邮件发信配置」中完成设置。"
-                "Streamlit 云端若 SMTP 登录失败，请改用 **Resend API**。"
-            )
+            st.warning("请先在左侧「📧 Gmail 发信配置」中填写发件邮箱和应用专用密码。")
 
         col_mail1, col_mail2 = st.columns([2, 1])
         with col_mail1:
@@ -2120,9 +1965,6 @@ def main():
                         meta,
                         attachment_format=mail_format,
                         smtp_override=smtp_override,
-                        email_method=email_method,
-                        resend_api_key=resend_api_key,
-                        resend_from_addr=resend_from,
                     )
                 if ok:
                     st.success(message)
