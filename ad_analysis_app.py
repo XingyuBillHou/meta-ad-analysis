@@ -455,6 +455,14 @@ def _open_excel_workbook(uploaded_file):
     )
 
 
+# 未在投放的账号 Sheet，读取 Excel 时自动跳过
+SKIPPED_SHEET_NAMES = frozenset({"nuage2026", "nuage wear"})
+
+
+def _is_skipped_sheet(sheet_name: str) -> bool:
+    return sheet_name.strip().lower() in SKIPPED_SHEET_NAMES
+
+
 def load_all_sheets(uploaded_file) -> dict:
     """读取上传文件中的所有 Sheet（或 CSV 的单表），返回 {sheet名: DataFrame}"""
     sheets = {}
