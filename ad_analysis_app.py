@@ -1128,6 +1128,14 @@ def build_docx_bytes(report: str, meta: dict) -> bytes:
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
+SMTP_PRESETS = {
+    "Gmail": {"host": "smtp.gmail.com", "port": 587, "use_tls": True, "use_ssl": False},
+    "QQ 邮箱": {"host": "smtp.qq.com", "port": 587, "use_tls": True, "use_ssl": False},
+    "163 邮箱": {"host": "smtp.163.com", "port": 465, "use_tls": False, "use_ssl": True},
+    "Outlook": {"host": "smtp.office365.com", "port": 587, "use_tls": True, "use_ssl": False},
+    "自定义": {"host": "", "port": 587, "use_tls": True, "use_ssl": False},
+}
+
 
 def _is_valid_email(addr: str) -> bool:
     return bool(EMAIL_RE.match((addr or "").strip()))
@@ -1142,16 +1150,31 @@ def _parse_email_list(text: str) -> list:
     return addrs
 
 
-def _get_smtp_config() -> dict:
-    port_raw = _secret("email", "smtp_port") or "587"
+def _get_smtp_config(override: dict = None) -> dict:
+    """读取 SMTP 配置：优先使用界面传入，其次 Streamlit Secrets。"""
+    override = override or {}
+    port_raw = override.get("port") or _secret("email", "smtp_port") or "587"
     try:
         port = int(port_raw)
-    except ValueError:
+    except (TypeError, ValueError):
         port = 587
-    user = _secret("email", "smtp_user")
-    password = _secret("email", "smtp_password")
-    host = _secret("email", "smtp_host")
-    from_addr = _secret("email", "from_addr") or user
+
+    user = (override.get("user") or _secret("email", "smtp_user")).strip()
+    password = (override.get("password") or _secret("email", "smtp_password")).strip()
+    host = (override.get("host") or _secret("email", "smtp_host")).strip()
+    from_addr = (override.get("from_addr") or _secret("email", "from_addr") or user).strip()
+
+    use_ssl = override.get("use_ssl")
+    if use_ssl is None:
+        use_ssl = _secret("email", "use_ssl", default="").lower() == "true"
+    use_tls = override.get("use_tls")
+    if use_tls is None:
+        use_tls = _secret("email", "use_tls", default="true").lower() != "false"
+
+    if port == 465 and not use_ssl:
+        use_ssl = True
+        use_tls = False
+
     if not host or not user or not password or not from_addr:
         return {}
     return {
@@ -1160,9 +1183,23 @@ def _get_smtp_config() -> dict:
         "user": user,
         "password": password,
         "from_addr": from_addr,
-        "from_name": _secret("email", "from_name") or "跨境电商广告分析报告",
-        "use_tls": _secret("email", "use_tls", default="true").lower() != "false",
+        "from_name": override.get("from_name") or _secret("email", "from_name") or "跨境电商广告分析报告",
+        "use_tls": use_tls and not use_ssl,
+        "use_ssl": use_ssl,
     }
+
+
+def _smtp_login_and_send(cfg: dict, msg: MIMEMultipart) -> None:
+    if cfg["use_ssl"]:
+        with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=30) as smtp:
+            smtp.login(cfg["user"], cfg["password"])
+            smtp.send_message(msg)
+        return
+    with smtplib.SMTP(cfg["host"], cfg["port"], timeout=30) as smtp:
+        if cfg["use_tls"]:
+            smtp.starttls()
+        smtp.login(cfg["user"], cfg["password"])
+        smtp.send_message(msg)
 
 
 def _build_email_attachment(report: str, meta: dict, attachment_format: str):
@@ -1191,13 +1228,14 @@ def send_report_email(
     report: str,
     meta: dict,
     attachment_format: str = "docx",
+    smtp_override: dict = None,
 ) -> tuple:
     """通过 SMTP 发送报告附件。返回 (成功与否, 提示信息)。"""
-    cfg = _get_smtp_config()
+    cfg = _get_smtp_config(smtp_override)
     if not cfg:
         return False, (
-            "未配置邮件服务器。请在 Streamlit Secrets 或本地 `.streamlit/secrets.toml` 中设置 "
-            "`email.smtp_host`、`email.smtp_user`、`email.smtp_password`。"
+            "未配置邮件服务器。请在左侧侧边栏「邮件发信配置」中填写 SMTP 信息，"
+            "或在 Streamlit Secrets 中设置 email.smtp_host / smtp_user / smtp_password。"
         )
     if not to_addrs:
         return False, "请填写至少一个有效的收件人邮箱。"
@@ -1208,7 +1246,7 @@ def send_report_email(
 
     msg = MIMEMultipart()
     msg["Subject"] = Header(subject, "utf-8")
-    msg["From"] = formataddr((str(Header(cfg["from_name"], "utf-8")), cfg["from_addr"]))
+    msg["From"] = formataddr((cfg["from_name"], cfg["from_addr"]))
     msg["To"] = ", ".join(to_addrs)
 
     body = f"""您好，
@@ -1229,14 +1267,14 @@ def send_report_email(
     msg.attach(attachment)
 
     try:
-        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=30) as smtp:
-            if cfg["use_tls"]:
-                smtp.starttls()
-            smtp.login(cfg["user"], cfg["password"])
-            smtp.send_message(msg)
+        _smtp_login_and_send(cfg, msg)
         return True, f"✅ 报告已发送至：{', '.join(to_addrs)}"
     except smtplib.SMTPAuthenticationError:
-        return False, "❌ SMTP 登录失败，请检查邮箱账号与授权码/密码。"
+        return False, "❌ SMTP 登录失败，请检查发件邮箱与授权码/密码（Gmail/QQ/163 需使用授权码，不是登录密码）。"
+    except smtplib.SMTPException as e:
+        return False, f"❌ 邮件发送失败（SMTP）：{e}"
+    except OSError as e:
+        return False, f"❌ 无法连接邮件服务器 {cfg['host']}:{cfg['port']}：{e}"
     except Exception as e:
         return False, f"❌ 邮件发送失败：{e}"
 
@@ -1593,6 +1631,57 @@ def main():
 
         temperature = st.slider("Temperature（创意度）", 0.0, 1.0, 0.5, 0.1)
 
+        st.markdown("---")
+        with st.expander("📧 邮件发信配置", expanded=False):
+            smtp_preset = st.selectbox(
+                "邮箱类型",
+                options=list(SMTP_PRESETS.keys()),
+                help="选择常用邮箱会自动填充 SMTP 服务器；Gmail/QQ/163 需使用授权码。",
+            )
+            preset = SMTP_PRESETS[smtp_preset]
+            if smtp_preset == "自定义":
+                smtp_host = st.text_input(
+                    "SMTP 服务器",
+                    value=_secret("email", "smtp_host"),
+                    placeholder="smtp.example.com",
+                )
+                smtp_port = st.number_input("端口", min_value=1, max_value=65535, value=587)
+                use_ssl = st.checkbox("使用 SSL（465 端口）", value=False)
+                use_tls = st.checkbox("使用 STARTTLS（587 端口）", value=not use_ssl)
+            else:
+                smtp_host = preset["host"]
+                smtp_port = preset["port"]
+                use_ssl = preset["use_ssl"]
+                use_tls = preset["use_tls"]
+                st.caption(f"SMTP：`{smtp_host}`　端口：`{smtp_port}`")
+
+            smtp_user = st.text_input(
+                "发件邮箱",
+                value=_secret("email", "smtp_user"),
+                placeholder="your@gmail.com",
+            )
+            smtp_password = st.text_input(
+                "授权码 / 密码",
+                type="password",
+                value=_secret("email", "smtp_password"),
+                help="Gmail：应用专用密码；QQ/163：邮箱设置中的 SMTP 授权码。",
+            )
+            smtp_from = st.text_input(
+                "发件地址（通常与发件邮箱相同）",
+                value=_secret("email", "from_addr") or smtp_user,
+            )
+
+        smtp_override = {
+            "host": smtp_host if smtp_preset == "自定义" else preset["host"],
+            "port": int(smtp_port),
+            "user": smtp_user,
+            "password": smtp_password,
+            "from_addr": smtp_from or smtp_user,
+            "use_tls": use_tls if smtp_preset == "自定义" else preset["use_tls"],
+            "use_ssl": use_ssl if smtp_preset == "自定义" else preset["use_ssl"],
+        }
+        smtp_ready = bool(_get_smtp_config(smtp_override))
+
     # ---------------- 主区：文件上传 ----------------
     uploaded_file = st.file_uploader("📁 上传广告投放数据文件 (.xlsx / .csv)", type=["xlsx", "csv"])
 
@@ -1820,13 +1909,9 @@ def main():
             )
 
         st.markdown("**发送报告到邮箱**")
-        smtp_ready = bool(_get_smtp_config())
         default_recipients = _secret("email", "default_recipients")
         if not smtp_ready:
-            st.info(
-                "邮件功能需在 Secrets 中配置 SMTP（`email.smtp_host` / `smtp_user` / "
-                "`smtp_password`）。示例见 `.streamlit/secrets.toml.example`。"
-            )
+            st.warning("请先在左侧侧边栏「📧 邮件发信配置」中填写发件邮箱和授权码。")
 
         col_mail1, col_mail2 = st.columns([2, 1])
         with col_mail1:
@@ -1850,7 +1935,11 @@ def main():
             else:
                 with st.spinner("正在发送邮件..."):
                     ok, message = send_report_email(
-                        recipients, report_body, meta, attachment_format=mail_format
+                        recipients,
+                        report_body,
+                        meta,
+                        attachment_format=mail_format,
+                        smtp_override=smtp_override,
                     )
                 if ok:
                     st.success(message)
