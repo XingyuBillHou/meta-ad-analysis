@@ -1259,26 +1259,12 @@ def _require_ascii(value: str, field_name: str) -> str:
 def _validate_llm_credentials(api_key: str, base_url: str) -> None:
     """在发起请求前检测常见 Key / URL 错配。"""
     key = api_key.strip().lower()
-    base = base_url.strip().lower()
 
     if key.startswith("apify_api") or key.startswith("apify_ap"):
         raise ValueError(
-            "检测到 **Apify API Key**（用于本项目 IG 红人工具），不能用于 AI 报告生成。\n\n"
-            "请改用大模型 Key：\n"
-            "- OpenAI：https://platform.openai.com/api-keys（sk- 开头）\n"
-            "- Google Gemini：https://aistudio.google.com/apikey（AIza 开头）\n"
-            "- DeepSeek：https://platform.deepseek.com（sk- 开头）\n"
-            "- 通义千问：https://dashscope.console.aliyun.com"
+            "检测到 **Apify API Key**，不能用于 AI 报告生成。"
+            "请检查 Gemini API Key 配置。"
         )
-
-    if "openai.com" in base and not key.startswith("sk-"):
-        raise ValueError(
-            "Base URL 指向 OpenAI，但 API Key 不是 OpenAI 格式（应以 sk- 开头）。\n"
-            "请确认没有误填 Apify / Meta 等其他平台的 Key。"
-        )
-
-    if "deepseek.com" in base and not key.startswith("sk-"):
-        raise ValueError("DeepSeek API Key 通常以 sk- 开头，请检查是否填写正确。")
 
 
 def _sanitize_api_key(api_key: str) -> str:
@@ -1294,32 +1280,29 @@ def _format_api_error(status: int, detail: str, api_key: str, base_url: str) -> 
 
     if "apify" in detail_lower or api_key.strip().lower().startswith("apify"):
         key_hint = (
-            "\n\n**原因**：你填写的是 Apify Key，不是大模型 Key。"
-            "请到 OpenAI / Google Gemini / DeepSeek / 通义千问 控制台获取对应 Key。"
+            "\n\n**原因**：API Key 配置有误，请检查 Gemini Key。"
         )
     elif status == 429:
         if "generativelanguage.googleapis.com" in base_lower or "quota" in detail_lower:
             key_hint = (
                 "\n\n**原因**：Google Gemini 免费额度已用完或未开通（limit: 0 表示当前无可用配额）。\n\n"
                 "**可选方案**：\n"
-                "1. 在 [Google AI Studio](https://aistudio.google.com/) 关联账单（即使只用免费额度也需激活）\n"
-                "2. 侧边栏将模型改为 `gemini-2.5-flash` 或 `gemini-2.5-flash-lite` 后重试\n"
-                "3. 查看用量：[ai.dev/rate-limit](https://ai.dev/rate-limit)\n"
-                "4. 换用 DeepSeek / 通义千问 / OpenAI 等其他服务商"
+                "1. 在 [Google AI Studio](https://aistudio.google.com/) 关联账单\n"
+                "2. 将模型改为 `gemini-2.5-flash-lite` 后重试\n"
+                "3. 查看用量：[ai.dev/rate-limit](https://ai.dev/rate-limit)"
             )
         else:
-            key_hint = "\n\n**原因**：请求频率或配额超限，请稍后重试或更换服务商/模型。"
+            key_hint = "\n\n**原因**：请求频率或配额超限，请稍后重试或更换模型。"
     elif status == 401:
-        key_hint = "\n\n**原因**：API Key 无效或与 Base URL 不匹配，请核对侧边栏配置。"
+        key_hint = "\n\n**原因**：Gemini API Key 无效，请核对侧边栏配置。"
     elif status == 404:
-        key_hint = "\n\n**原因**：Base URL 或模型名称可能不正确。"
+        key_hint = "\n\n**原因**：模型名称可能不正确。"
     elif status in (502, 503, 529):
         key_hint = (
-            "\n\n**原因**：模型服务暂时不可用（高峰期常见，通常几分钟内恢复）。\n\n"
+            "\n\n**原因**：Gemini 服务暂时不可用（高峰期常见，通常几分钟内恢复）。\n\n"
             "**建议**：\n"
-            "1. 等待 1~2 分钟后点击「生成 AI 分析报告」重试（系统已自动重试 3 次）\n"
-            "2. Gemini 用户可改用 `gemini-2.5-flash-lite` 等轻量模型\n"
-            "3. 或临时切换 DeepSeek / 通义千问 等其他服务商"
+            "1. 等待 1~2 分钟后点击「生成 AI 分析报告」重试\n"
+            "2. 改用 `gemini-2.5-flash-lite` 等轻量模型"
         )
 
     return f"❌ API 请求失败 (HTTP {status})：{detail}{key_hint}"
@@ -1418,7 +1401,7 @@ def generate_report(
     max_output_tokens = 4096
 
     if not api_key:
-        return "❌ 错误：未填写 API Key，请在左侧侧边栏配置。"
+        return "❌ 错误：请先在左侧侧边栏填写 Gemini API Key。"
 
     api_key = _require_ascii(_sanitize_api_key(api_key), "API Key")
     base_url = _require_ascii(base_url.rstrip("/"), "Base URL")
@@ -1534,23 +1517,6 @@ def call_llm(api_key: str, base_url: str, model_name: str,
 
 
 # ============================================================
-# 各服务商可选模型列表
-# ============================================================
-
-PROVIDER_MODELS = {
-    "OpenAI": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1", "o3-mini"],
-    "Google Gemini": [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.5-pro",
-        "gemini-2.0-flash",
-    ],
-    "DeepSeek": ["deepseek-chat", "deepseek-reasoner"],
-    "通义千问": ["qwen-plus", "qwen-turbo", "qwen-max", "qwen-long"],
-}
-
-
-# ============================================================
 # Streamlit Cloud Secrets（可选）
 # ============================================================
 
@@ -1568,6 +1534,25 @@ def _secret(*keys, default=""):
 
 
 # ============================================================
+# Google Gemini 配置（唯一大模型）
+# ============================================================
+
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-pro",
+    "gemini-2.0-flash",
+]
+GEMINI_DEFAULT_MODEL = GEMINI_MODELS[0]
+
+
+PROVIDER_MODELS = {
+    "Google Gemini": GEMINI_MODELS,
+}
+
+
+# ============================================================
 # 主程序：Streamlit UI
 # ============================================================
 
@@ -1581,117 +1566,32 @@ def main():
     st.title("📊 跨境电商广告投放多维度智能分析与生成系统")
     st.caption("支持日报 / 周报 / 月报，自动跨 Shopify、Google、Meta、AppLovin 多渠道数据生成 AI 分析报告")
 
-    # ---------------- 侧边栏：模型配置 ----------------
+    # ---------------- 侧边栏：Gemini 配置 ----------------
     with st.sidebar:
-        st.header("⚙️ 大模型配置")
-
-        provider_defaults = {
-            "OpenAI": ("https://api.openai.com/v1", "gpt-4o-mini"),
-            "Google Gemini": (
-                "https://generativelanguage.googleapis.com/v1beta/openai",
-                "gemini-2.5-flash",
-            ),
-            "DeepSeek": ("https://api.deepseek.com/v1", "deepseek-chat"),
-            "通义千问": ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
-            "自定义": ("https://api.openai.com/v1", "gpt-4o-mini"),
-        }
-        key_placeholders = {
-            "OpenAI": "sk-xxxxxxxx",
-            "Google Gemini": "AIzaSyxxxxxxxx",
-            "DeepSeek": "sk-xxxxxxxx",
-            "通义千问": "sk-xxxxxxxx",
-            "自定义": "sk- 或 AIza 开头",
-        }
-
-        if "llm_provider" not in st.session_state:
-            st.session_state.llm_provider = "OpenAI"
-            url, model = provider_defaults["OpenAI"]
-            st.session_state.llm_base_url = url
-            st.session_state.llm_model = model
-
-        provider_names = list(provider_defaults.keys())
-        secret_provider = _secret("llm", "provider")
-        provider_index = (
-            provider_names.index(secret_provider)
-            if secret_provider in provider_names
-            else 0
-        )
-        if "secrets_applied" not in st.session_state:
-            secret_base = _secret("llm", "base_url")
-            secret_model = _secret("llm", "model")
-            if secret_base:
-                st.session_state.llm_base_url = secret_base
-            if secret_model:
-                st.session_state.llm_model = secret_model
-            st.session_state.secrets_applied = True
-
-        provider = st.selectbox(
-            "服务商",
-            provider_names,
-            index=provider_index,
-            key="llm_provider",
-            help="选择后会自动填充 Base URL 和推荐模型名",
-        )
-        if provider != st.session_state.get("_prev_llm_provider"):
-            url, model = provider_defaults[provider]
-            st.session_state.llm_base_url = url
-            if provider in PROVIDER_MODELS:
-                st.session_state.llm_model = PROVIDER_MODELS[provider][0]
-            else:
-                st.session_state.llm_model = model
-            st.session_state._prev_llm_provider = provider
+        st.header("⚙️ Gemini 配置")
 
         api_key = st.text_input(
             "API Key",
             type="password",
-            value=_secret("llm", "api_key"),
-            placeholder=key_placeholders.get(provider, "sk- 或 AIza 开头"),
-            help="OpenAI / DeepSeek / 通义千问：sk- 开头\n"
-            "Google Gemini：从 https://aistudio.google.com/apikey 获取\n"
-            "也可在 Streamlit Cloud Secrets 中配置 llm.api_key。",
+            placeholder="Gemini API Key",
+            help="从 https://aistudio.google.com/apikey 获取",
         )
-        base_url = st.text_input(
-            "Base URL",
-            key="llm_base_url",
-            help="OpenAI: https://api.openai.com/v1\n"
-                 "Google Gemini: https://generativelanguage.googleapis.com/v1beta/openai\n"
-                 "DeepSeek: https://api.deepseek.com/v1\n"
-                 "通义千问: https://dashscope.aliyuncs.com/compatible-mode/v1",
+        base_url = GEMINI_BASE_URL
+
+        default_model = GEMINI_DEFAULT_MODEL
+        model_name = st.selectbox(
+            "模型",
+            options=GEMINI_MODELS,
+            index=GEMINI_MODELS.index(default_model),
+            help="推荐 gemini-2.5-flash；配额紧张时可改用 flash-lite。",
         )
-        if provider == "自定义":
-            model_name = st.text_input(
-                "模型名称",
-                key="llm_model",
-                placeholder="输入自定义模型 ID",
-            )
-        else:
-            models = PROVIDER_MODELS[provider]
-            current = st.session_state.get("llm_model", models[0])
-            model_index = models.index(current) if current in models else 0
-            model_name = st.selectbox(
-                "模型名称",
-                options=models,
-                index=model_index,
-                key=f"llm_model_{provider}",
-            )
-            st.session_state.llm_model = model_name
 
-        if provider == "Google Gemini":
-            st.caption(
-                "💡 Gemini 免费额度有限；若报 429 配额错误，请在 "
-                "[AI Studio](https://aistudio.google.com/) 激活账单，或换用其他服务商。"
-            )
-
-        if api_key.strip().lower().startswith("apify"):
-            st.error("⚠️ 当前是 Apify Key，请换成大模型 Key（sk- 开头）")
+        st.caption(
+            "💡 Gemini 免费额度有限；若报 429，请在 "
+            "[AI Studio](https://aistudio.google.com/) 激活账单，或改用 flash-lite 模型。"
+        )
 
         temperature = st.slider("Temperature（创意度）", 0.0, 1.0, 0.5, 0.1)
-
-        st.markdown("---")
-        st.caption(
-            "💡 API Key 可在侧边栏填写，或在 Streamlit Cloud「Settings → Secrets」"
-            "中配置 llm.api_key（团队私有部署时使用）。"
-        )
 
     # ---------------- 主区：文件上传 ----------------
     uploaded_file = st.file_uploader("📁 上传广告投放数据文件 (.xlsx / .csv)", type=["xlsx", "csv"])
@@ -1828,7 +1728,7 @@ def main():
 
     if generate_btn:
         if not api_key:
-            st.error("❌ 请先在左侧侧边栏填写大模型 API Key。")
+            st.error("❌ 请先在左侧侧边栏填写 Gemini API Key。")
         else:
             try:
                 with st.spinner("正在提取多渠道数据..."):
