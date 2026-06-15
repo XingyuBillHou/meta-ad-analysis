@@ -1643,6 +1643,10 @@ PROVIDER_MODELS = {
 }
 
 
+APP_DIR = Path(__file__).resolve().parent
+PAGE_ICON_PATH = APP_DIR / "page_icon.png"
+
+
 # ============================================================
 # 主程序：Streamlit UI
 # ============================================================
@@ -1650,7 +1654,7 @@ PROVIDER_MODELS = {
 def main():
     st.set_page_config(
         page_title="跨境电商广告智能分析系统",
-        page_icon="📊",
+        page_icon=str(PAGE_ICON_PATH) if PAGE_ICON_PATH.exists() else "📊",
         layout="wide",
     )
 
