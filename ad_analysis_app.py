@@ -1541,11 +1541,25 @@ def _require_ascii(value: str, field_name: str) -> str:
 def _validate_llm_credentials(api_key: str, base_url: str) -> None:
     """在发起请求前检测常见 Key / URL 错配。"""
     key = api_key.strip().lower()
+    base = base_url.strip().lower()
 
     if key.startswith("apify_api") or key.startswith("apify_ap"):
         raise ValueError(
-            "检测到 **Apify API Key**，不能用于 AI 报告生成。"
-            "请检查 Gemini API Key 配置。"
+            "检测到 **Apify API Key**（用于 IG 红人工具），不能用于 AI 报告生成。\n\n"
+            "请改用大模型 Key：OpenAI / Gemini / DeepSeek / 通义千问 / Kimi 等。"
+        )
+
+    if "openai.com" in base and key and not key.startswith("sk-"):
+        raise ValueError(
+            "Base URL 指向 OpenAI，但 API Key 不是 OpenAI 格式（通常以 sk- 开头）。"
+        )
+
+    if "deepseek.com" in base and key and not key.startswith("sk-"):
+        raise ValueError("DeepSeek API Key 通常以 sk- 开头，请检查是否填写正确。")
+
+    if "openrouter.ai" in base and key and not key.startswith("sk-or-"):
+        raise ValueError(
+            "OpenRouter API Key 通常以 sk-or- 开头，请从 openrouter.ai 获取。"
         )
 
 
@@ -1774,7 +1788,7 @@ def generate_report(
     max_output_tokens = 4096
 
     if not api_key:
-        return "❌ 错误：请先在左侧侧边栏填写 Gemini API Key。"
+        return "❌ 错误：请先在左侧侧边栏填写大模型 API Key。"
 
     api_key = _require_ascii(_sanitize_api_key(api_key), "API Key")
     base_url = _require_ascii(base_url.rstrip("/"), "Base URL")
@@ -1905,22 +1919,303 @@ def _secret(*keys, default=""):
 
 
 # ============================================================
-# Google Gemini 配置（唯一大模型）
+# 大模型服务商配置（OpenAI 兼容 API）
 # ============================================================
 
-GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
-GEMINI_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-pro",
-    "gemini-2.0-flash",
-]
-GEMINI_DEFAULT_MODEL = GEMINI_MODELS[0]
-
-
-PROVIDER_MODELS = {
-    "Google Gemini": GEMINI_MODELS,
+LLM_PROVIDERS = {
+    "Google Gemini": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "models": [
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-3.1-pro-preview-customtools",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-flash-latest",
+            "gemini-pro-latest",
+        ],
+        "default_model": "gemini-2.5-flash",
+        "allow_custom_model": True,
+        "model_hints": {
+            "gemini-3.5-flash": "3.x 稳定 · 速度与质量均衡（最新推荐）",
+            "gemini-3.1-flash-lite": "3.x 稳定 · 低成本高吞吐",
+            "gemini-3.1-pro-preview": "3.x 预览 · 最强推理与分析",
+            "gemini-3-flash-preview": "3.x 预览 · 快速响应",
+            "gemini-3.1-pro-preview-customtools": "3.x 预览 · 工具调用增强",
+            "gemini-2.5-pro": "2.5 稳定 · 复杂推理与长报告",
+            "gemini-2.5-flash": "2.5 稳定 · 默认推荐",
+            "gemini-2.5-flash-lite": "2.5 稳定 · 配额紧张时首选",
+            "gemini-flash-latest": "自动指向最新 Flash",
+            "gemini-pro-latest": "自动指向最新 Pro",
+        },
+        "key_placeholder": "AIza...",
+        "key_help": "https://aistudio.google.com/apikey",
+        "note": "免费额度有限；429 时可改用 flash-lite，或在列表末选「手动输入其他模型」。",
+    },
+    "OpenAI": {
+        "base_url": "https://api.openai.com/v1",
+        "models": [
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o3-mini",
+        ],
+        "default_model": "gpt-4o-mini",
+        "key_placeholder": "sk-...",
+        "key_help": "https://platform.openai.com/api-keys",
+        "note": "需国际网络；长报告推荐 gpt-4.1 或 gpt-4o。",
+    },
+    "DeepSeek": {
+        "base_url": "https://api.deepseek.com/v1",
+        "models": [
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ],
+        "default_model": "deepseek-chat",
+        "key_placeholder": "sk-...",
+        "key_help": "https://platform.deepseek.com",
+        "note": "性价比高，中文表现好；reasoner 适合复杂分析但较慢。",
+    },
+    "通义千问": {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "models": [
+            "qwen-max",
+            "qwen-plus",
+            "qwen-turbo",
+            "qwen-long",
+        ],
+        "default_model": "qwen-plus",
+        "key_placeholder": "sk-...",
+        "key_help": "https://dashscope.console.aliyun.com",
+        "note": "国内访问稳定；长上下文可选 qwen-long。",
+    },
+    "Moonshot (Kimi)": {
+        "base_url": "https://api.moonshot.cn/v1",
+        "models": [
+            "kimi-k2.5",
+            "moonshot-v1-128k",
+            "moonshot-v1-32k",
+            "moonshot-v1-8k",
+        ],
+        "default_model": "kimi-k2.5",
+        "key_placeholder": "sk-...",
+        "key_help": "https://platform.moonshot.cn",
+        "note": "Kimi 系列；128k 上下文适合长数据。",
+    },
+    "智谱 GLM": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "models": [
+            "glm-4-plus",
+            "glm-4-air",
+            "glm-4-flash",
+            "glm-4-long",
+        ],
+        "default_model": "glm-4-flash",
+        "key_placeholder": "xxx.yyy",
+        "key_help": "https://open.bigmodel.cn",
+        "note": "智谱开放平台 API Key。",
+    },
+    "SiliconFlow": {
+        "base_url": "https://api.siliconflow.cn/v1",
+        "models": [
+            "deepseek-ai/DeepSeek-V3",
+            "deepseek-ai/DeepSeek-R1",
+            "Qwen/Qwen2.5-72B-Instruct",
+            "Pro/Qwen/Qwen2.5-7B-Instruct",
+            "THUDM/glm-4-9b-chat",
+        ],
+        "default_model": "deepseek-ai/DeepSeek-V3",
+        "key_placeholder": "sk-...",
+        "key_help": "https://cloud.siliconflow.cn",
+        "note": "国内聚合平台，可调用多种开源/商业模型。",
+    },
+    "OpenRouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "models": [
+            "google/gemini-2.5-pro",
+            "anthropic/claude-sonnet-4",
+            "openai/gpt-4o",
+            "deepseek/deepseek-chat",
+            "qwen/qwen-2.5-72b-instruct",
+        ],
+        "default_model": "google/gemini-2.5-pro",
+        "key_placeholder": "sk-or-...",
+        "key_help": "https://openrouter.ai/keys",
+        "note": "一个 Key 调用多家模型；需在 OpenRouter 账户充值。",
+        "extra_headers": True,
+    },
+    "自定义": {
+        "base_url": "https://api.openai.com/v1",
+        "models": [],
+        "default_model": "gpt-4o-mini",
+        "custom": True,
+        "key_placeholder": "sk-...",
+        "key_help": "",
+        "note": "填写任意 OpenAI 兼容服务的 Base URL 与模型名。",
+    },
 }
+
+
+def _provider_secret_key(provider: str) -> str:
+    """从 Streamlit Secrets 读取对应服务商的 API Key（可选）。"""
+    slug_map = {
+        "Google Gemini": ("gemini", "api_key"),
+        "OpenAI": ("openai", "api_key"),
+        "DeepSeek": ("deepseek", "api_key"),
+        "通义千问": ("qwen", "api_key"),
+        "Moonshot (Kimi)": ("moonshot", "api_key"),
+        "智谱 GLM": ("glm", "api_key"),
+        "SiliconFlow": ("siliconflow", "api_key"),
+        "OpenRouter": ("openrouter", "api_key"),
+    }
+    keys = slug_map.get(provider)
+    if keys:
+        val = _secret(*keys)
+        if val:
+            return val
+    return _secret("llm", "api_key")
+
+
+CUSTOM_MODEL_OPTION = "（手动输入其他模型）"
+
+
+def _format_model_option(model_id: str, hints: dict) -> str:
+    hint = hints.get(model_id, "")
+    return f"{model_id} — {hint}" if hint else model_id
+
+
+def _on_provider_change(provider: str) -> None:
+    cfg = LLM_PROVIDERS[provider]
+    st.session_state.llm_base_url = cfg.get("base_url", "")
+    st.session_state.llm_model = cfg.get("default_model", "")
+    if cfg.get("models"):
+        st.session_state.llm_model_choice = cfg["default_model"]
+
+
+def render_llm_sidebar() -> dict:
+    """渲染侧边栏大模型配置，返回 api_key / base_url / model_name / temperature。"""
+    st.header("⚙️ 大模型配置")
+
+    provider_names = list(LLM_PROVIDERS.keys())
+    if "llm_provider" not in st.session_state:
+        st.session_state.llm_provider = "Google Gemini"
+        _on_provider_change(st.session_state.llm_provider)
+
+    provider = st.selectbox(
+        "服务商",
+        provider_names,
+        key="llm_provider",
+        help="均使用 OpenAI 兼容 Chat Completions 接口。",
+    )
+
+    if st.session_state.get("_llm_prev_provider") != provider:
+        st.session_state._llm_prev_provider = provider
+        _on_provider_change(provider)
+
+    cfg = LLM_PROVIDERS[provider]
+    default_key = _provider_secret_key(provider)
+
+    api_key = st.text_input(
+        "API Key",
+        value=default_key,
+        type="password",
+        placeholder=cfg.get("key_placeholder", "sk-..."),
+        help=cfg.get("key_help") or "对应服务商控制台的 API Key",
+    )
+
+    if cfg.get("custom"):
+        base_url = st.text_input(
+            "Base URL",
+            value=st.session_state.get("llm_base_url", cfg.get("base_url", "")),
+            key="llm_base_url",
+            placeholder="https://api.example.com/v1",
+        )
+        model_name = st.text_input(
+            "模型名称",
+            value=st.session_state.get("llm_model", cfg.get("default_model", "")),
+            key="llm_model",
+            placeholder="gpt-4o-mini",
+        )
+    else:
+        base_url = cfg["base_url"]
+        st.caption(f"Base URL: `{base_url}`")
+
+        models = list(cfg["models"])
+        hints = cfg.get("model_hints", {})
+        default_model = cfg["default_model"]
+        if st.session_state.get("llm_model") not in models:
+            st.session_state.llm_model = default_model
+
+        if cfg.get("allow_custom_model"):
+            select_options = models + [CUSTOM_MODEL_OPTION]
+            current = st.session_state.get("llm_model", default_model)
+            if current in models:
+                select_index = models.index(current)
+            elif st.session_state.get("llm_use_custom"):
+                select_index = len(models)
+            else:
+                select_index = models.index(default_model)
+
+            choice = st.selectbox(
+                "模型",
+                options=select_options,
+                index=select_index,
+                format_func=lambda m: (
+                    CUSTOM_MODEL_OPTION if m == CUSTOM_MODEL_OPTION
+                    else _format_model_option(m, hints)
+                ),
+                key="llm_model_select",
+                help=f"推荐 {default_model}；也可手动输入官方文档中的其他 Gemini 模型 ID。",
+            )
+
+            if choice == CUSTOM_MODEL_OPTION:
+                st.session_state.llm_use_custom = True
+                model_name = st.text_input(
+                    "Gemini 模型 ID",
+                    value=st.session_state.get("llm_custom_model", ""),
+                    key="llm_custom_model_input",
+                    placeholder="例如 gemini-2.5-flash",
+                ).strip()
+                st.session_state.llm_custom_model = model_name
+            else:
+                st.session_state.llm_use_custom = False
+                model_name = choice
+                st.session_state.llm_model = model_name
+        else:
+            model_name = st.selectbox(
+                "模型",
+                options=models,
+                index=models.index(st.session_state.llm_model),
+                format_func=lambda m: _format_model_option(m, hints),
+                key="llm_model_select",
+                help=f"推荐 {default_model}",
+            )
+            st.session_state.llm_model = model_name
+
+    if cfg.get("note"):
+        st.caption(f"💡 {cfg['note']}")
+
+    temperature = st.slider("Temperature（创意度）", 0.0, 1.0, 0.5, 0.1)
+
+    return {
+        "api_key": api_key.strip(),
+        "base_url": base_url.strip().rstrip("/"),
+        "model_name": model_name.strip(),
+        "temperature": temperature,
+        "provider": provider,
+        "extra_headers": cfg.get("extra_headers", False),
+    }
+
+
+# 兼容旧常量名
+GEMINI_BASE_URL = LLM_PROVIDERS["Google Gemini"]["base_url"]
+GEMINI_MODELS = LLM_PROVIDERS["Google Gemini"]["models"]
+GEMINI_DEFAULT_MODEL = LLM_PROVIDERS["Google Gemini"]["default_model"]
+PROVIDER_MODELS = {name: cfg["models"] for name, cfg in LLM_PROVIDERS.items() if cfg.get("models")}
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -2215,33 +2510,14 @@ def main():
     st.title("投放数据AI分析")
     st.caption("支持日报 / 周报 / 月报，自动跨 Shopify、Google、Meta、AppLovin 多渠道数据生成 AI 分析报告")
 
-    # ---------------- 侧边栏：Gemini 配置 ----------------
+    # ---------------- 侧边栏：大模型 + 邮件配置 ----------------
     with st.sidebar:
         st.markdown("---")
-        st.header("⚙️ Gemini 配置")
-
-        api_key = st.text_input(
-            "API Key",
-            type="password",
-            placeholder="Gemini API Key",
-            help="从 https://aistudio.google.com/apikey 获取",
-        )
-        base_url = GEMINI_BASE_URL
-
-        default_model = GEMINI_DEFAULT_MODEL
-        model_name = st.selectbox(
-            "模型",
-            options=GEMINI_MODELS,
-            index=GEMINI_MODELS.index(default_model),
-            help="推荐 gemini-2.5-flash；配额紧张时可改用 flash-lite。",
-        )
-
-        st.caption(
-            "💡 Gemini 免费额度有限；若报 429，请在 "
-            "[AI Studio](https://aistudio.google.com/) 激活账单，或改用 flash-lite 模型。"
-        )
-
-        temperature = st.slider("Temperature（创意度）", 0.0, 1.0, 0.5, 0.1)
+        llm_cfg = render_llm_sidebar()
+        api_key = llm_cfg["api_key"]
+        base_url = llm_cfg["base_url"]
+        model_name = llm_cfg["model_name"]
+        temperature = llm_cfg["temperature"]
 
         st.markdown("---")
         with st.expander("📧 Gmail 发信配置", expanded=False):
@@ -2451,7 +2727,9 @@ def main():
 
     if generate_btn:
         if not api_key:
-            st.error("❌ 请先在左侧侧边栏填写 Gemini API Key。")
+            st.error("❌ 请先在左侧侧边栏填写大模型 API Key。")
+        elif not model_name:
+            st.error("❌ 请选择或填写 Gemini 模型名称。")
         else:
             try:
                 with st.spinner("正在提取多渠道数据..."):
