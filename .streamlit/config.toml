@@ -1,4 +1,5 @@
 [theme]
+# 基础主题为浅色；实际界面通过 CSS 跟随系统或用户手动切换深/浅色
 base = "light"
 
 [server]

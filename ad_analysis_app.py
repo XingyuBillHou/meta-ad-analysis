@@ -1646,6 +1646,134 @@ PROVIDER_MODELS = {
 APP_DIR = Path(__file__).resolve().parent
 PAGE_ICON_PATH = APP_DIR / "page_icon.png"
 
+THEME_MODE_LABELS = {
+    "system": "跟随系统",
+    "light": "浅色",
+    "dark": "深色",
+}
+
+
+def _theme_css(mode: str) -> str:
+    """生成随系统/手动切换的 UI 主题 CSS。"""
+    light_vars = """
+        --ad-bg: #ffffff;
+        --ad-bg-secondary: #f6f8fb;
+        --ad-text: #1a1a1a;
+        --ad-text-muted: #5f6368;
+        --ad-border: #e2e8f0;
+        --ad-input-bg: #ffffff;
+        --ad-code-bg: #f1f5f9;
+        --ad-shadow: rgba(15, 23, 42, 0.06);
+    """
+    dark_vars = """
+        --ad-bg: #0e1117;
+        --ad-bg-secondary: #161b22;
+        --ad-text: #f0f3f6;
+        --ad-text-muted: #9ba3af;
+        --ad-border: #30363d;
+        --ad-input-bg: #21262d;
+        --ad-code-bg: #1c2128;
+        --ad-shadow: rgba(0, 0, 0, 0.35);
+    """
+    shared_rules = """
+        .stApp,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"],
+        [data-testid="stMainBlockContainer"] {
+            background-color: var(--ad-bg) !important;
+            color: var(--ad-text) !important;
+        }
+        [data-testid="stHeader"] {
+            background-color: var(--ad-bg) !important;
+        }
+        [data-testid="stSidebar"],
+        [data-testid="stSidebarContent"],
+        section[data-testid="stSidebar"] > div {
+            background-color: var(--ad-bg-secondary) !important;
+            color: var(--ad-text) !important;
+        }
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] span,
+        .main h1, .main h2, .main h3,
+        .main label, .main p, .main span,
+        [data-testid="stMarkdownContainer"] {
+            color: var(--ad-text) !important;
+        }
+        .main .stCaption,
+        [data-testid="stCaptionContainer"] {
+            color: var(--ad-text-muted) !important;
+        }
+        [data-testid="stTextInput"] input,
+        [data-testid="stNumberInput"] input,
+        textarea,
+        [data-baseweb="select"] > div,
+        [data-baseweb="input"] > div {
+            background-color: var(--ad-input-bg) !important;
+            color: var(--ad-text) !important;
+            border-color: var(--ad-border) !important;
+        }
+        [data-testid="stExpander"] details {
+            background-color: var(--ad-bg-secondary) !important;
+            border: 1px solid var(--ad-border) !important;
+            border-radius: 8px;
+        }
+        [data-testid="stExpander"] summary {
+            color: var(--ad-text) !important;
+        }
+        [data-testid="stButton"] button[kind="secondary"],
+        [data-testid="stDownloadButton"] button {
+            background-color: var(--ad-bg-secondary) !important;
+            color: var(--ad-text) !important;
+            border: 1px solid var(--ad-border) !important;
+        }
+        [data-testid="stButton"] button[kind="primary"] {
+            background-color: #1f77b4 !important;
+            color: #ffffff !important;
+        }
+        .stDataFrame,
+        [data-testid="stDataFrame"] {
+            border: 1px solid var(--ad-border) !important;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        hr {
+            border-color: var(--ad-border) !important;
+        }
+        code, pre {
+            background-color: var(--ad-code-bg) !important;
+            color: var(--ad-text) !important;
+        }
+        [data-testid="stFileUploader"] section {
+            background-color: var(--ad-bg-secondary) !important;
+            border-color: var(--ad-border) !important;
+        }
+        [data-testid="stFileUploader"] span,
+        [data-testid="stFileUploader"] small {
+            color: var(--ad-text-muted) !important;
+        }
+    """
+
+    if mode == "light":
+        return f":root {{ {light_vars} }}{shared_rules}"
+    if mode == "dark":
+        return f":root {{ {dark_vars} }}{shared_rules}"
+    return f"""
+        :root {{ {light_vars} }}
+        @media (prefers-color-scheme: dark) {{
+            :root {{ {dark_vars} }}
+        }}
+        {shared_rules}
+    """
+
+
+def apply_adaptive_theme(mode: str = "system") -> None:
+    """注入自适应深/浅色 UI 样式。mode: system | light | dark"""
+    st.markdown(f"<style>{_theme_css(mode)}</style>", unsafe_allow_html=True)
+
 
 # ============================================================
 # 主程序：Streamlit UI
@@ -1658,11 +1786,25 @@ def main():
         layout="wide",
     )
 
+    with st.sidebar:
+        st.header("🎨 显示主题")
+        theme_label = st.radio(
+            "界面模式",
+            options=list(THEME_MODE_LABELS.values()),
+            index=0,
+            horizontal=True,
+            help="「跟随系统」将根据电脑/浏览器的深色/浅色设置自动切换。",
+        )
+        theme_mode = next(k for k, v in THEME_MODE_LABELS.items() if v == theme_label)
+
+    apply_adaptive_theme(theme_mode)
+
     st.title("投放数据AI分析")
     st.caption("支持日报 / 周报 / 月报，自动跨 Shopify、Google、Meta、AppLovin 多渠道数据生成 AI 分析报告")
 
     # ---------------- 侧边栏：Gemini 配置 ----------------
     with st.sidebar:
+        st.markdown("---")
         st.header("⚙️ Gemini 配置")
 
         api_key = st.text_input(
