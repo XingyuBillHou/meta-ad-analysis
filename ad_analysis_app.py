@@ -357,6 +357,18 @@ def get_weekend_buckets(sheets_dict: dict) -> list:
         return []
 
 
+def _sort_week_buckets_newest_first(buckets: list) -> list:
+    """按表格位置降序：越靠下的 Week 行（通常越新）排在列表越前。"""
+    def sort_key(b):
+        week_num = b.get("week_number")
+        return (
+            b.get("row_index", 0),
+            week_num if week_num is not None else -1,
+        )
+
+    return sorted(buckets, key=sort_key, reverse=True)
+
+
 def get_week_buckets(sheets_dict: dict) -> list:
     """扫描 Sheet 日期列中所有「Week / Week N」周汇总行。"""
     try:
@@ -388,7 +400,7 @@ def get_week_buckets(sheets_dict: dict) -> list:
                 "row_index": idx,
                 "source_sheet": source_name,
             })
-        return buckets
+        return _sort_week_buckets_newest_first(buckets)
     except Exception as e:
         st.warning(f"⚠️ 扫描 Week 周汇总行时出错：{e}")
         return []
@@ -2688,7 +2700,7 @@ def main():
             week_bucket = st.selectbox(
                 "选择 Week 周汇总",
                 options=week_buckets,
-                index=len(week_buckets) - 1,
+                index=0,
                 format_func=_format_week_bucket,
             )
             date_info = _format_week_bucket(week_bucket)
