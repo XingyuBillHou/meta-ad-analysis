@@ -729,6 +729,48 @@ def get_valid_dates(sheets_dict: dict):
         return []
 
 
+def get_date_mode_options_for_report(report_type: str, weekend_buckets: list) -> tuple:
+    """根据报告维度返回可选的数据范围、默认选项与说明。"""
+    if report_type == "日报":
+        return (
+            ["单一日期"],
+            "单一日期",
+            "日报：选择单个分析日期。",
+        )
+    if report_type == "周报":
+        options = ["日期范围"]
+        default = "日期范围"
+        if weekend_buckets:
+            options.append("周末三日")
+            default = "周末三日"
+        return (
+            options,
+            default,
+            "周报：默认选「周末三日」汇总段；也可自定义一周日期范围。",
+        )
+    # 月报
+    return (
+        ["日期范围"],
+        "日期范围",
+        "月报：选择整月或自定义月份区间（默认当月已有数据）。",
+    )
+
+
+def get_default_range_for_report(report_type: str, valid_dates: list) -> tuple:
+    """按报告维度计算日期范围的默认起止日。"""
+    if not valid_dates:
+        return None, None
+    min_d, max_d = min(valid_dates), max(valid_dates)
+    if report_type == "周报":
+        start = max(min_d, max_d - timedelta(days=6))
+        return start, max_d
+    if report_type == "月报":
+        month_start = max_d.replace(day=1)
+        start = max(min_d, month_start)
+        return start, max_d
+    return max_d, max_d
+
+
 # ============================================================
 # 模块四：AI 分析报告生成引擎
 # ============================================================
@@ -743,6 +785,16 @@ def build_system_prompt(report_type: str, date_mode: str) -> str:
         time_note = (
             f"这是一份【{report_type}】，数据为**周末三日汇总**（周五+周六+周日合并），"
             f"请按整个周末区间评估表现，并与相邻工作日/周末对比。"
+        )
+    elif report_type == "周报":
+        time_note = (
+            f"这是一份【周报】，数据为所选**一周区间**内的表现。"
+            f"请汇总该周各渠道消耗、ROAS、转化趋势，对比周内波动，并给出下周预算建议。"
+        )
+    elif report_type == "月报":
+        time_note = (
+            f"这是一份【月报】，数据为所选**月份区间**内的表现。"
+            f"请从月度维度分析体量、趋势、渠道贡献与结构性变化，并给出下月策略。"
         )
     else:
         time_note = (
@@ -2035,9 +2087,19 @@ def main():
         st.error("❌ 无法从数据中提取到有效日期或周末汇总行，请检查 Shopify Sheet。")
         return
 
-    date_mode_options = ["单一日期", "日期范围"]
-    if weekend_buckets:
-        date_mode_options.append("周末三日")
+    date_mode_options, default_date_mode_label, date_mode_help = (
+        get_date_mode_options_for_report(report_type, weekend_buckets)
+    )
+
+    if "date_mode_label" not in st.session_state:
+        st.session_state["date_mode_label"] = default_date_mode_label
+
+    if st.session_state.get("_prev_report_type") != report_type:
+        st.session_state["_prev_report_type"] = report_type
+        st.session_state["date_mode_label"] = default_date_mode_label
+
+    if st.session_state.get("date_mode_label") not in date_mode_options:
+        st.session_state["date_mode_label"] = default_date_mode_label
 
     selected_date = None
     start_date = None
@@ -2047,18 +2109,20 @@ def main():
     date_mode = "single"
 
     with col_b:
+        st.caption(date_mode_help)
         date_mode_label = st.radio(
             "数据范围",
             date_mode_options,
             horizontal=True,
-            help="单一日期：选一天；日期范围：自定义起止；周末三日：选周五~周日汇总行",
+            key="date_mode_label",
+            help=date_mode_help,
         )
         date_mode_map = {"单一日期": "single", "日期范围": "range", "周末三日": "weekend"}
         date_mode = date_mode_map[date_mode_label]
 
         if date_mode == "single":
             if not valid_dates:
-                st.warning("⚠️ 未找到标准日期，请改用「日期范围」或「周末三日」。")
+                st.warning("⚠️ 未找到标准日期，请检查数据。")
             else:
                 selected_date = st.selectbox(
                     "选择日期",
@@ -2074,14 +2138,27 @@ def main():
                 st.warning("⚠️ 未找到标准日期，无法设定范围。")
             else:
                 min_d, max_d = min(valid_dates), max(valid_dates)
+                def_start, def_end = get_default_range_for_report(report_type, valid_dates)
+                range_label = "选择周区间" if report_type == "周报" else (
+                    "选择月区间" if report_type == "月报" else "选择日期范围"
+                )
+                st.markdown(f"**{range_label}**")
                 c1, c2 = st.columns(2)
                 with c1:
                     start_date = st.date_input(
-                        "开始日期", value=min_d, min_value=min_d, max_value=max_d
+                        "开始日期",
+                        value=def_start,
+                        min_value=min_d,
+                        max_value=max_d,
+                        key=f"range_start_{report_type}",
                     )
                 with c2:
                     end_date = st.date_input(
-                        "结束日期", value=max_d, min_value=min_d, max_value=max_d
+                        "结束日期",
+                        value=def_end,
+                        min_value=min_d,
+                        max_value=max_d,
+                        key=f"range_end_{report_type}",
                     )
                 if start_date > end_date:
                     st.warning("⚠️ 开始日期晚于结束日期，已自动交换。")
