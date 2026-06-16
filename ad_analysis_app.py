@@ -35,6 +35,9 @@ os.environ.setdefault("PYTHONUTF8", "1")
 # ============================================================
 
 DATE_PATTERN = re.compile(r'^\d{4}[-/]\d{1,2}[-/]\d{1,2}')
+CHINESE_WEEKDAY_SUFFIX_RE = re.compile(
+    r'[\s　]+(?:星期|周)[一二三四五六日天](?:\s|$)'
+)
 WEEKEND_LABEL_RE = re.compile(r'周末|weekend', re.I)
 WEEK_LABEL_RE = re.compile(r'^week(?!\s*end)(?:\s+[\w.-]+|\s*\d+)?$', re.I)
 SKIP_ROW_LABEL_RE = re.compile(
@@ -42,6 +45,14 @@ SKIP_ROW_LABEL_RE = re.compile(
     r'september|october|november|december|日期|date)$',
     re.I,
 )
+
+
+def _normalize_date_string(val) -> str:
+    s = str(val).strip()
+    if not s:
+        return s
+    s = CHINESE_WEEKDAY_SUFFIX_RE.sub("", s).strip()
+    return s
 
 
 def is_valid_date(val) -> bool:
@@ -69,7 +80,7 @@ def is_valid_date(val) -> bool:
     if isinstance(val, (int, float, np.integer, np.floating)):
         return False
 
-    s = str(val).strip()
+    s = _normalize_date_string(val)
     if not s:
         return False
 
@@ -89,7 +100,7 @@ def to_date(val):
             return val.date()
         if isinstance(val, date):
             return val
-        return pd.to_datetime(str(val).strip()).date()
+        return pd.to_datetime(_normalize_date_string(val)).date()
     except Exception:
         return None
 
@@ -194,6 +205,8 @@ def is_data_row(row) -> bool:
         return False
     if is_valid_date(col0) or is_md_dot_date(col0):
         return int(row.iloc[1:].notna().sum()) >= 1
+    if parse_any_date(col0) is not None:
+        return int(row.iloc[1:].notna().sum()) >= 1
     return False
 
 
@@ -205,6 +218,8 @@ def is_header_row(row) -> bool:
     if pd.notna(col0) and str(col0).strip() in ("日期", "date", "Date", "DATE"):
         return True
     if is_data_row(row) or is_weekend_label(col0) or is_week_label(col0):
+        return False
+    if parse_any_date(col0) is not None:
         return False
     text_count = sum(
         1 for v in row
@@ -512,48 +527,145 @@ def _filter_week_rows(cleaned_df: pd.DataFrame, date_col, bucket: dict) -> pd.Da
 # 模块一(数据层)：复杂合并表头的"暴力拍平"读取引擎
 # ============================================================
 
+DATE_HEADER_LABELS = frozenset({"日期", "date", "Date", "DATE"})
+
+
+def _is_date_header_cell(val) -> bool:
+    try:
+        if val is None or pd.isna(val):
+            return False
+    except (TypeError, ValueError):
+        return False
+    return str(val).strip() in DATE_HEADER_LABELS
+
+
+def find_date_header_rows(raw: pd.DataFrame) -> list:
+    """定位 Sheet 中所有以「日期」开头的新表头块（支持中途换表头）。"""
+    rows = []
+    for i in range(len(raw)):
+        if _is_date_header_cell(raw.iloc[i, 0]):
+            rows.append(i)
+    return rows
+
+
+def _dedupe_column_names(names: list) -> list:
+    seen = {}
+    final = []
+    for name in names:
+        if name in seen:
+            seen[name] += 1
+            final.append(f"{name}_{seen[name]}")
+        else:
+            seen[name] = 0
+            final.append(name)
+    return final
+
+
+def _header_row_non_empty_count(row) -> int:
+    count = 0
+    for val in row:
+        try:
+            if val is None or pd.isna(val):
+                continue
+        except (TypeError, ValueError):
+            pass
+        if str(val).strip() and str(val).strip().lower() != "nan":
+            count += 1
+    return count
+
+
+def _build_column_names(header_block: pd.DataFrame) -> list:
+    """
+    拍平多层表头为列名。
+    - 仅对「分组行」（非最后一行表头）做横向 ffill，还原 Excel 合并单元格；
+    - 最后一行表头视为 campaign/指标名行，不做横向 ffill，避免 Retargeting 误填到空列。
+    """
+    if header_block.empty:
+        return []
+
+    n_rows = len(header_block)
+    processed = []
+    for row_idx in range(n_rows):
+        row = header_block.iloc[row_idx].copy()
+        is_leaf_header = row_idx == n_rows - 1
+        if not is_leaf_header:
+            row = row.ffill()
+        processed.append(row)
+
+    names = []
+    for col_idx in range(header_block.shape[1]):
+        parts = []
+        for row in processed:
+            val = row.iloc[col_idx]
+            try:
+                if val is None or pd.isna(val):
+                    continue
+            except (TypeError, ValueError):
+                pass
+            s = str(val).strip()
+            if s and s.lower() != "nan" and s not in parts:
+                parts.append(s)
+        names.append("_".join(parts) if parts else f"列{col_idx}")
+    return names
+
+
+def _find_segment_data_start(raw: pd.DataFrame, header_start: int, segment_end: int) -> int:
+    """定位表头块之后的第一行数据。"""
+    for i in range(header_start + 1, segment_end):
+        if is_data_row(raw.iloc[i]):
+            return i
+    return min(header_start + 1, segment_end)
+
+
+def _flatten_header_segment(raw: pd.DataFrame, header_start: int, segment_end: int) -> pd.DataFrame:
+    data_start = _find_segment_data_start(raw, header_start, segment_end)
+    if data_start <= header_start + 1:
+        return pd.DataFrame()
+
+    header_block = raw.iloc[header_start:data_start]
+    if header_block.empty:
+        return pd.DataFrame()
+
+    # 去掉表头块尾部全空行，保留最后一行 campaign 名称行
+    while len(header_block) > 1 and _header_row_non_empty_count(header_block.iloc[-1]) == 0:
+        header_block = header_block.iloc[:-1]
+
+    data_block = raw.iloc[data_start:segment_end].copy()
+    if data_block.empty:
+        return pd.DataFrame()
+
+    data_block.columns = _dedupe_column_names(_build_column_names(header_block))
+    return data_block.reset_index(drop=True)
+
+
 def flatten_merged_header(raw: pd.DataFrame) -> pd.DataFrame:
     """
     将已读出的原始表格（header=None）拍平 2-4 行合并表头，返回标准 DataFrame。
-    适配 Shopify 等多层表头、M.DD 短日期等格式。
+    适配 Shopify 等多层表头、中途换表头、M.DD 短日期等格式。
     """
     if raw.empty or raw.shape[0] < 1:
         return pd.DataFrame()
 
-    data_start_row = find_data_start_row(raw)
-    if data_start_row == 0:
-        data_start_row = 1
+    header_starts = find_date_header_rows(raw)
+    if not header_starts:
+        data_start_row = find_data_start_row(raw)
+        if data_start_row == 0:
+            data_start_row = 1
+        header_start = find_header_start(raw, data_start_row)
+        return _flatten_header_segment(raw, header_start, len(raw))
 
-    header_start = find_header_start(raw, data_start_row)
-    header_block = raw.iloc[header_start:data_start_row]
-    header_block = header_block.ffill(axis=1).ffill(axis=0)
+    segments = []
+    for idx, header_start in enumerate(header_starts):
+        segment_end = header_starts[idx + 1] if idx + 1 < len(header_starts) else len(raw)
+        segment_df = _flatten_header_segment(raw, header_start, segment_end)
+        if not segment_df.empty:
+            segments.append(segment_df)
 
-    data_block = raw.iloc[data_start_row:].reset_index(drop=True)
-
-    new_columns = []
-    for col_idx in range(raw.shape[1]):
-        parts = []
-        for row_idx in range(len(header_block)):
-            val = header_block.iloc[row_idx, col_idx]
-            if pd.notna(val):
-                s = str(val).strip()
-                if s and s.lower() != "nan" and s not in parts:
-                    parts.append(s)
-        col_name = "_".join(parts) if parts else f"列{col_idx}"
-        new_columns.append(col_name)
-
-    seen = {}
-    final_columns = []
-    for c in new_columns:
-        if c in seen:
-            seen[c] += 1
-            final_columns.append(f"{c}_{seen[c]}")
-        else:
-            seen[c] = 0
-            final_columns.append(c)
-
-    data_block.columns = final_columns
-    return data_block
+    if not segments:
+        return pd.DataFrame()
+    if len(segments) == 1:
+        return segments[0]
+    return pd.concat(segments, ignore_index=True, sort=False)
 
 
 def smart_read_sheet(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
