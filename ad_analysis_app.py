@@ -36,8 +36,9 @@ os.environ.setdefault("PYTHONUTF8", "1")
 
 DATE_PATTERN = re.compile(r'^\d{4}[-/]\d{1,2}[-/]\d{1,2}')
 WEEKEND_LABEL_RE = re.compile(r'周末|weekend', re.I)
+WEEK_LABEL_RE = re.compile(r'^week(?:\s*\d+)?$', re.I)
 SKIP_ROW_LABEL_RE = re.compile(
-    r'^(week\s*\d*|february?|january|march|april|may|june|july|august|'
+    r'^(february?|january|march|april|may|june|july|august|'
     r'september|october|november|december|日期|date)$',
     re.I,
 )
@@ -160,6 +161,8 @@ def parse_any_date(val, ref_dates: list = None):
         return None
     if is_weekend_label(val):
         return None
+    if is_week_label(val):
+        return None
     if is_valid_date(val):
         return to_date(val)
     if is_md_dot_date(val):
@@ -168,7 +171,7 @@ def parse_any_date(val, ref_dates: list = None):
 
 
 def is_skip_row_label(val) -> bool:
-    """Week 汇总行、重复表头行等不参与日期匹配。"""
+    """月份名、重复表头行等不参与日期匹配（Week 汇总行由 is_week_label 单独识别）。"""
     try:
         if val is None or pd.isna(val):
             return True
@@ -185,7 +188,7 @@ def is_data_row(row) -> bool:
     if row is None or len(row) == 0:
         return False
     col0 = row.iloc[0]
-    if is_weekend_label(col0):
+    if is_weekend_label(col0) or is_week_label(col0):
         return True
     if is_skip_row_label(col0):
         return False
@@ -201,7 +204,7 @@ def is_header_row(row) -> bool:
     col0 = row.iloc[0]
     if pd.notna(col0) and str(col0).strip() in ("日期", "date", "Date", "DATE"):
         return True
-    if is_data_row(row) or is_weekend_label(col0):
+    if is_data_row(row) or is_weekend_label(col0) or is_week_label(col0):
         return False
     text_count = sum(
         1 for v in row
@@ -261,6 +264,33 @@ def is_weekend_label(val) -> bool:
     if not s:
         return False
     return bool(WEEKEND_LABEL_RE.search(s)) or "三日" in s
+
+
+def is_week_label(val) -> bool:
+    """判断是否为「Week / Week 23」等周汇总行标签。"""
+    try:
+        if val is None:
+            return False
+        if isinstance(val, float) and np.isnan(val):
+            return False
+        if pd.isna(val):
+            return False
+    except (TypeError, ValueError):
+        pass
+
+    if is_valid_date(val):
+        return False
+
+    s = str(val).strip()
+    if not s:
+        return False
+    return bool(WEEK_LABEL_RE.match(s))
+
+
+def parse_week_number(val):
+    """从 Week 标签解析周序号，纯 Week 返回 None。"""
+    m = re.match(r'^week\s*(\d+)$', str(val).strip(), re.I)
+    return int(m.group(1)) if m else None
 
 
 def infer_weekend_range(cleaned_df: pd.DataFrame, date_col, row_idx: int):
@@ -327,6 +357,43 @@ def get_weekend_buckets(sheets_dict: dict) -> list:
         return []
 
 
+def get_week_buckets(sheets_dict: dict) -> list:
+    """扫描 Sheet 日期列中所有「Week / Week N」周汇总行。"""
+    try:
+        source_df = get_shopify_df(sheets_dict)
+        source_name = "Shopify"
+        if source_df is None:
+            for name, df in sheets_dict.items():
+                if df is not None and not df.empty:
+                    source_df = df
+                    source_name = name
+                    break
+        if source_df is None or source_df.empty:
+            return []
+
+        cleaned_df = clean_columns(source_df)
+        date_col = find_date_column(cleaned_df)
+        if date_col is None:
+            return []
+
+        buckets = []
+        for idx, val in enumerate(cleaned_df[date_col]):
+            if not is_week_label(val):
+                continue
+            label = str(val).strip()
+            buckets.append({
+                "bucket_index": len(buckets),
+                "raw_label": label,
+                "week_number": parse_week_number(label),
+                "row_index": idx,
+                "source_sheet": source_name,
+            })
+        return buckets
+    except Exception as e:
+        st.warning(f"⚠️ 扫描 Week 周汇总行时出错：{e}")
+        return []
+
+
 def _filter_weekend_rows(cleaned_df: pd.DataFrame, date_col, bucket: dict) -> pd.DataFrame:
     """在各 Sheet 中定位与 bucket 对应的「周末三日」汇总行。"""
     raw = cleaned_df[date_col]
@@ -340,6 +407,29 @@ def _filter_weekend_rows(cleaned_df: pd.DataFrame, date_col, bucket: dict) -> pd
     label_matches = cleaned_df[raw.astype(str).str.strip() == label]
     if bucket_idx < len(label_matches):
         return label_matches.iloc[[bucket_idx]]
+
+    return pd.DataFrame()
+
+
+def _filter_week_rows(cleaned_df: pd.DataFrame, date_col, bucket: dict) -> pd.DataFrame:
+    """在各 Sheet 中定位与 bucket 对应的「Week」周汇总行。"""
+    raw = cleaned_df[date_col]
+    week_indices = [i for i, val in enumerate(raw) if is_week_label(val)]
+
+    bucket_idx = bucket["bucket_index"]
+    if bucket_idx < len(week_indices):
+        return cleaned_df.iloc[[week_indices[bucket_idx]]]
+
+    label = bucket["raw_label"]
+    label_matches = cleaned_df[raw.astype(str).str.strip().str.lower() == label.lower()]
+    if not label_matches.empty:
+        return label_matches.iloc[[0]]
+
+    week_num = bucket.get("week_number")
+    if week_num is not None:
+        for i, val in enumerate(raw):
+            if is_week_label(val) and parse_week_number(val) == week_num:
+                return cleaned_df.iloc[[i]]
 
     return pd.DataFrame()
 
@@ -611,11 +701,13 @@ def extract_data_for_report(
     start_date: date = None,
     end_date: date = None,
     weekend_bucket: dict = None,
+    week_bucket: dict = None,
 ) -> dict:
     """
     核心数据抓取：
     - single：各 Sheet 中日期 == selected_date 的行
     - range：日期落在 [start_date, end_date] 的行（时间序列）
+    - week：匹配日期列为「Week / Week N」的周汇总行
     - weekend：匹配「周末三日」汇总行（周五~周日合并数据）
     """
     result = {}
@@ -633,7 +725,12 @@ def extract_data_for_report(
                 result[sheet_name] = f"【{sheet_name}】未识别到日期列，跳过该渠道数据提取。"
                 continue
 
-            if date_mode == "weekend":
+            if date_mode == "week":
+                if not week_bucket:
+                    result[sheet_name] = f"【{sheet_name}】未指定 Week 周汇总，跳过。"
+                    continue
+                filtered = _filter_week_rows(cleaned_df, date_col, week_bucket)
+            elif date_mode == "weekend":
                 if not weekend_bucket:
                     result[sheet_name] = f"【{sheet_name}】未指定周末三日区间，跳过。"
                     continue
@@ -669,7 +766,11 @@ def extract_data_for_report(
                 filtered = cleaned_df[mask]
 
             if filtered.empty:
-                if date_mode == "weekend":
+                if date_mode == "week":
+                    result[sheet_name] = (
+                        f"【{sheet_name}】未找到「{week_bucket['raw_label']}」周汇总行。"
+                    )
+                elif date_mode == "weekend":
                     fri = weekend_bucket["start"].strftime("%Y-%m-%d")
                     sun = weekend_bucket["end"].strftime("%Y-%m-%d")
                     result[sheet_name] = (
@@ -729,7 +830,11 @@ def get_valid_dates(sheets_dict: dict):
         return []
 
 
-def get_date_mode_options_for_report(report_type: str, weekend_buckets: list) -> tuple:
+def get_date_mode_options_for_report(
+    report_type: str,
+    weekend_buckets: list,
+    week_buckets: list,
+) -> tuple:
     """根据报告维度返回可选的数据范围、默认选项与说明。"""
     if report_type == "日报":
         return (
@@ -738,6 +843,16 @@ def get_date_mode_options_for_report(report_type: str, weekend_buckets: list) ->
             "日报：选择单个分析日期。",
         )
     if report_type == "周报":
+        if week_buckets:
+            options = ["Week 周数据"]
+            if weekend_buckets:
+                options.append("周末三日")
+            options.append("日期范围")
+            return (
+                options,
+                "Week 周数据",
+                "周报：默认识别表格中日期列为 **Week** 的周汇总行。",
+            )
         options = ["日期范围"]
         default = "日期范围"
         if weekend_buckets:
@@ -746,7 +861,7 @@ def get_date_mode_options_for_report(report_type: str, weekend_buckets: list) ->
         return (
             options,
             default,
-            "周报：默认选「周末三日」汇总段；也可自定义一周日期范围。",
+            "周报：未检测到 Week 行，可改选日期范围或周末三日。",
         )
     # 月报
     return (
@@ -781,6 +896,11 @@ def build_system_prompt(report_type: str, date_mode: str) -> str:
             f"这是一份【{report_type}】，数据为**单日**快照，"
             f"请重点关注该日各渠道的即时表现、异常波动及与近期均值的对比。"
         )
+    elif date_mode == "week":
+        time_note = (
+            f"这是一份【{report_type}】，数据来自表格中日期列为 **Week** 的**周汇总行**（非逐日明细）。"
+            f"请按整周口径解读各渠道消耗、ROAS、转化，并与相邻周对比。"
+        )
     elif date_mode == "weekend":
         time_note = (
             f"这是一份【{report_type}】，数据为**周末三日汇总**（周五+周六+周日合并），"
@@ -788,8 +908,8 @@ def build_system_prompt(report_type: str, date_mode: str) -> str:
         )
     elif report_type == "周报":
         time_note = (
-            f"这是一份【周报】，数据为所选**一周区间**内的表现。"
-            f"请汇总该周各渠道消耗、ROAS、转化趋势，对比周内波动，并给出下周预算建议。"
+            f"这是一份【周报】，数据为所选**日期范围**内的逐日表现。"
+            f"请汇总该区间各渠道趋势并给出下周建议。"
         )
     elif report_type == "月报":
         time_note = (
@@ -872,7 +992,10 @@ def build_data_digest(extracted_data: dict) -> str:
 
 
 def _pick_summary_row(rows: list) -> dict:
-    """优先取「周末三日」汇总行，否则取首行。"""
+    """优先取 Week / 周末三日 汇总行，否则取首行。"""
+    for row in rows:
+        if is_week_label(row.get("日期")):
+            return row
     for row in rows:
         if is_weekend_label(row.get("日期")):
             return row
@@ -1065,6 +1188,11 @@ def build_user_content(extracted_data: dict, date_info: str, date_mode: str) -> 
         lines.append(
             "\n\n请注意：以上每个渠道的数据均为按日期排列的列表（时间序列），"
             "请结合日期变化分析趋势。"
+        )
+    elif date_mode == "week":
+        lines.append(
+            "\n\n请注意：以上数据来自各 Sheet 中日期列为 **Week** 的周汇总行，"
+            "已是整周合并指标，请勿与逐日数据重复相加。"
         )
     elif date_mode == "weekend":
         lines.append(
@@ -2082,13 +2210,14 @@ def main():
 
     valid_dates = get_valid_dates(sheets)
     weekend_buckets = get_weekend_buckets(sheets)
+    week_buckets = get_week_buckets(sheets)
 
-    if not valid_dates and not weekend_buckets:
-        st.error("❌ 无法从数据中提取到有效日期或周末汇总行，请检查 Shopify Sheet。")
+    if not valid_dates and not weekend_buckets and not week_buckets:
+        st.error("❌ 无法从数据中提取到有效日期、Week 周汇总或周末汇总行，请检查 Excel。")
         return
 
     date_mode_options, default_date_mode_label, date_mode_help = (
-        get_date_mode_options_for_report(report_type, weekend_buckets)
+        get_date_mode_options_for_report(report_type, weekend_buckets, week_buckets)
     )
 
     if "date_mode_label" not in st.session_state:
@@ -2105,6 +2234,7 @@ def main():
     start_date = None
     end_date = None
     weekend_bucket = None
+    week_bucket = None
     date_info = ""
     date_mode = "single"
 
@@ -2117,7 +2247,12 @@ def main():
             key="date_mode_label",
             help=date_mode_help,
         )
-        date_mode_map = {"单一日期": "single", "日期范围": "range", "周末三日": "weekend"}
+        date_mode_map = {
+            "单一日期": "single",
+            "日期范围": "range",
+            "Week 周数据": "week",
+            "周末三日": "weekend",
+        }
         date_mode = date_mode_map[date_mode_label]
 
         if date_mode == "single":
@@ -2168,7 +2303,21 @@ def main():
                 else:
                     date_info = f"{start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}"
 
-        else:  # weekend
+        elif date_mode == "week":
+            def _format_week_bucket(b):
+                if b.get("week_number") is not None:
+                    return f"Week {b['week_number']}（周汇总）"
+                return f"{b['raw_label']}（周汇总）"
+
+            week_bucket = st.selectbox(
+                "选择 Week 周汇总",
+                options=week_buckets,
+                index=len(week_buckets) - 1,
+                format_func=_format_week_bucket,
+            )
+            date_info = _format_week_bucket(week_bucket)
+
+        elif date_mode == "weekend":
             def _format_weekend_bucket(b):
                 return (
                     f"周末三日 ({b['start'].strftime('%Y-%m-%d')} ~ "
@@ -2189,6 +2338,10 @@ def main():
         st.caption(
             f"📌 标准日期：{min(valid_dates)} ~ {max(valid_dates)}，共 {len(valid_dates)} 天"
         )
+    if week_buckets:
+        labels = ", ".join(b["raw_label"] for b in week_buckets[:8])
+        suffix = "..." if len(week_buckets) > 8 else ""
+        st.caption(f"📌 检测到 {len(week_buckets)} 个 Week 周汇总行：{labels}{suffix}")
     if weekend_buckets:
         st.caption(f"📌 检测到 {len(weekend_buckets)} 个「周末三日」汇总段")
 
@@ -2209,6 +2362,7 @@ def main():
                         start_date=start_date,
                         end_date=end_date,
                         weekend_bucket=weekend_bucket,
+                        week_bucket=week_bucket,
                     )
 
                 with st.expander("🧾 查看提交给 AI 的原始数据（调试用）"):
