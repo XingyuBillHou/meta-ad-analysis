@@ -617,11 +617,23 @@ def _find_segment_data_start(raw: pd.DataFrame, header_start: int, segment_end: 
     return min(header_start + 1, segment_end)
 
 
+def _resolve_header_block_start(raw: pd.DataFrame, header_start: int) -> int:
+    """从「日期」行向上纳入同一表头块中的指标/分组行（如 CPM、ROAS）。"""
+    actual_start = header_start
+    for i in range(header_start - 1, -1, -1):
+        if is_header_row(raw.iloc[i]):
+            actual_start = i
+        else:
+            break
+    return actual_start
+
+
 def _flatten_header_segment(raw: pd.DataFrame, header_start: int, segment_end: int) -> pd.DataFrame:
     data_start = _find_segment_data_start(raw, header_start, segment_end)
-    if data_start <= header_start + 1:
+    if data_start <= header_start:
         return pd.DataFrame()
 
+    header_start = _resolve_header_block_start(raw, header_start)
     header_block = raw.iloc[header_start:data_start]
     if header_block.empty:
         return pd.DataFrame()
@@ -636,6 +648,29 @@ def _flatten_header_segment(raw: pd.DataFrame, header_start: int, segment_end: i
 
     data_block.columns = _dedupe_column_names(_build_column_names(header_block))
     return data_block.reset_index(drop=True)
+
+
+GENERIC_COLUMN_RE = re.compile(r'^列\d+$')
+
+
+def _segment_quality_score(columns) -> int:
+    score = 0
+    for col in columns:
+        name = str(col)
+        if GENERIC_COLUMN_RE.match(name):
+            continue
+        score += 3 if name != "日期" else 1
+    return score
+
+
+def _is_valid_segment(df: pd.DataFrame) -> bool:
+    """过滤仅含「日期 + 列N」的无效表头段（如 Shopify 顶部占位区）。"""
+    if df is None or df.empty or len(df.columns) < 2:
+        return False
+    generic = sum(1 for c in df.columns if GENERIC_COLUMN_RE.match(str(c)))
+    if generic >= max(3, len(df.columns) // 2):
+        return False
+    return _segment_quality_score(df.columns) >= 4
 
 
 def flatten_merged_header(raw: pd.DataFrame) -> pd.DataFrame:
@@ -658,7 +693,7 @@ def flatten_merged_header(raw: pd.DataFrame) -> pd.DataFrame:
     for idx, header_start in enumerate(header_starts):
         segment_end = header_starts[idx + 1] if idx + 1 < len(header_starts) else len(raw)
         segment_df = _flatten_header_segment(raw, header_start, segment_end)
-        if not segment_df.empty:
+        if _is_valid_segment(segment_df):
             segments.append(segment_df)
 
     if not segments:
