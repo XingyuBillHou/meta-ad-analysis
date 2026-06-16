@@ -1653,12 +1653,12 @@ PAGE_ICON_PATH = APP_DIR / "page_icon.png"
 
 def main():
     st.set_page_config(
-        page_title="跨境电商广告智能分析系统",
+        page_title="投放数据AI分析",
         page_icon=str(PAGE_ICON_PATH) if PAGE_ICON_PATH.exists() else "📊",
         layout="wide",
     )
 
-    st.title("📊 跨境电商广告投放多维度智能分析与生成系统")
+    st.title("投放数据AI分析")
     st.caption("支持日报 / 周报 / 月报，自动跨 Shopify、Google、Meta、AppLovin 多渠道数据生成 AI 分析报告")
 
     # ---------------- 侧边栏：Gemini 配置 ----------------
