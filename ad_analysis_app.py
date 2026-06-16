@@ -1663,23 +1663,40 @@ def _theme_css(mode: str) -> str:
         --ad-border: #e2e8f0;
         --ad-input-bg: #ffffff;
         --ad-code-bg: #f1f5f9;
-        --ad-shadow: rgba(15, 23, 42, 0.06);
+        --ad-link: #1f77b4;
+        --ad-alert-info-bg: #e8f4fd;
+        --ad-alert-info-text: #0c4a6e;
+        --ad-alert-warn-bg: #fff8e6;
+        --ad-alert-warn-text: #7c4a03;
+        --ad-alert-error-bg: #fdecec;
+        --ad-alert-error-text: #7f1d1d;
+        --ad-alert-success-bg: #ecfdf3;
+        --ad-alert-success-text: #14532d;
     """
     dark_vars = """
-        --ad-bg: #0e1117;
+        --ad-bg: #0d1117;
         --ad-bg-secondary: #161b22;
-        --ad-text: #f0f3f6;
-        --ad-text-muted: #9ba3af;
-        --ad-border: #30363d;
+        --ad-text: #f3f4f6;
+        --ad-text-muted: #b6bec8;
+        --ad-border: #3d444d;
         --ad-input-bg: #21262d;
-        --ad-code-bg: #1c2128;
-        --ad-shadow: rgba(0, 0, 0, 0.35);
+        --ad-code-bg: #2d333b;
+        --ad-link: #58a6ff;
+        --ad-alert-info-bg: #132f4c;
+        --ad-alert-info-text: #cce4ff;
+        --ad-alert-warn-bg: #3d2e00;
+        --ad-alert-warn-text: #ffe8a3;
+        --ad-alert-error-bg: #3f1414;
+        --ad-alert-error-text: #ffc9c9;
+        --ad-alert-success-bg: #0f2f1f;
+        --ad-alert-success-text: #b7f5cb;
     """
     shared_rules = """
         .stApp,
         [data-testid="stAppViewContainer"],
         [data-testid="stMain"],
-        [data-testid="stMainBlockContainer"] {
+        [data-testid="stMainBlockContainer"],
+        .main .block-container {
             background-color: var(--ad-bg) !important;
             color: var(--ad-text) !important;
         }
@@ -1695,33 +1712,84 @@ def _theme_css(mode: str) -> str:
         [data-testid="stSidebar"] h1,
         [data-testid="stSidebar"] h2,
         [data-testid="stSidebar"] h3,
+        [data-testid="stSidebar"] h4,
         [data-testid="stSidebar"] label,
         [data-testid="stSidebar"] p,
         [data-testid="stSidebar"] span,
-        .main h1, .main h2, .main h3,
-        .main label, .main p, .main span,
-        [data-testid="stMarkdownContainer"] {
+        [data-testid="stSidebar"] div,
+        .main h1, .main h2, .main h3, .main h4,
+        .main label, .main p, .main span, .main div,
+        [data-testid="stMarkdownContainer"],
+        [data-testid="stMarkdownContainer"] p,
+        [data-testid="stMarkdownContainer"] li,
+        [data-testid="stMarkdownContainer"] ol,
+        [data-testid="stMarkdownContainer"] ul,
+        [data-testid="stMarkdownContainer"] h1,
+        [data-testid="stMarkdownContainer"] h2,
+        [data-testid="stMarkdownContainer"] h3,
+        [data-testid="stMarkdownContainer"] h4,
+        [data-testid="stMarkdownContainer"] strong,
+        [data-testid="stMarkdownContainer"] em,
+        [data-testid="stWidgetLabel"] p,
+        [data-testid="stRadio"] label,
+        [data-testid="stSelectbox"] label,
+        [data-testid="stSlider"] label,
+        [data-testid="stTextInput"] label,
+        [data-testid="stFileUploader"] label {
             color: var(--ad-text) !important;
         }
         .main .stCaption,
-        [data-testid="stCaptionContainer"] {
+        [data-testid="stCaptionContainer"],
+        [data-testid="stCaptionContainer"] p {
             color: var(--ad-text-muted) !important;
+        }
+        a, [data-testid="stMarkdownContainer"] a {
+            color: var(--ad-link) !important;
         }
         [data-testid="stTextInput"] input,
         [data-testid="stNumberInput"] input,
         textarea,
         [data-baseweb="select"] > div,
-        [data-baseweb="input"] > div {
+        [data-baseweb="input"] > div,
+        [data-baseweb="textarea"] textarea {
             background-color: var(--ad-input-bg) !important;
             color: var(--ad-text) !important;
             border-color: var(--ad-border) !important;
+            caret-color: var(--ad-text) !important;
+        }
+        input::placeholder,
+        textarea::placeholder {
+            color: var(--ad-text-muted) !important;
+            opacity: 1 !important;
+        }
+        [data-baseweb="popover"],
+        [data-baseweb="menu"],
+        ul[role="listbox"] {
+            background-color: var(--ad-input-bg) !important;
+            border-color: var(--ad-border) !important;
+        }
+        [data-baseweb="menu"] li,
+        ul[role="listbox"] li,
+        [role="option"] {
+            color: var(--ad-text) !important;
+            background-color: var(--ad-input-bg) !important;
+        }
+        [data-baseweb="menu"] li:hover,
+        ul[role="listbox"] li:hover,
+        [role="option"]:hover {
+            background-color: var(--ad-bg-secondary) !important;
         }
         [data-testid="stExpander"] details {
             background-color: var(--ad-bg-secondary) !important;
             border: 1px solid var(--ad-border) !important;
             border-radius: 8px;
         }
-        [data-testid="stExpander"] summary {
+        [data-testid="stExpander"] summary,
+        [data-testid="stExpander"] summary span,
+        [data-testid="stExpander"] summary p {
+            color: var(--ad-text) !important;
+        }
+        [data-testid="stExpander"] [data-testid="stMarkdownContainer"] {
             color: var(--ad-text) !important;
         }
         [data-testid="stButton"] button[kind="secondary"],
@@ -1733,26 +1801,91 @@ def _theme_css(mode: str) -> str:
         [data-testid="stButton"] button[kind="primary"] {
             background-color: #1f77b4 !important;
             color: #ffffff !important;
+            border: 1px solid #1a6aa3 !important;
         }
+        [data-testid="stDataFrame"],
+        [data-testid="stDataFrame"] > div,
+        [data-testid="stDataFrame"] iframe,
+        [data-testid="stDataFrame"] table,
+        [data-testid="stDataFrame"] th,
+        [data-testid="stDataFrame"] td,
         .stDataFrame,
-        [data-testid="stDataFrame"] {
+        .stDataFrame table,
+        .stDataFrame th,
+        .stDataFrame td {
+            background-color: var(--ad-bg-secondary) !important;
+            color: var(--ad-text) !important;
+            border-color: var(--ad-border) !important;
+        }
+        [data-testid="stMarkdownContainer"] table,
+        [data-testid="stMarkdownContainer"] th,
+        [data-testid="stMarkdownContainer"] td {
+            background-color: var(--ad-bg-secondary) !important;
+            color: var(--ad-text) !important;
             border: 1px solid var(--ad-border) !important;
-            border-radius: 8px;
-            overflow: hidden;
         }
         hr {
             border-color: var(--ad-border) !important;
         }
-        code, pre {
+        code, pre, [data-testid="stCode"] code {
             background-color: var(--ad-code-bg) !important;
             color: var(--ad-text) !important;
+            border: 1px solid var(--ad-border) !important;
         }
-        [data-testid="stFileUploader"] section {
+        [data-testid="stCodeBlock"] {
+            background-color: var(--ad-code-bg) !important;
+            border: 1px solid var(--ad-border) !important;
+        }
+        [data-testid="stFileUploader"] section,
+        [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] {
             background-color: var(--ad-bg-secondary) !important;
             border-color: var(--ad-border) !important;
         }
         [data-testid="stFileUploader"] span,
-        [data-testid="stFileUploader"] small {
+        [data-testid="stFileUploader"] small,
+        [data-testid="stFileUploader"] p {
+            color: var(--ad-text-muted) !important;
+        }
+        [data-testid="stAlert"] {
+            border: 1px solid var(--ad-border) !important;
+        }
+        [data-testid="stAlert"] [data-testid="stMarkdownContainer"],
+        [data-testid="stAlert"] [data-testid="stMarkdownContainer"] p,
+        [data-testid="stAlert"] p,
+        [data-testid="stAlert"] span,
+        [data-testid="stAlert"] div {
+            color: inherit !important;
+        }
+        [data-testid="stAlert"]:has([data-testid="stAlertContentInfo"]),
+        div[data-testid="stNotificationContentInfo"] {
+            background-color: var(--ad-alert-info-bg) !important;
+            color: var(--ad-alert-info-text) !important;
+        }
+        [data-testid="stAlert"]:has([data-testid="stAlertContentWarning"]),
+        div[data-testid="stNotificationContentWarning"] {
+            background-color: var(--ad-alert-warn-bg) !important;
+            color: var(--ad-alert-warn-text) !important;
+        }
+        [data-testid="stAlert"]:has([data-testid="stAlertContentError"]),
+        div[data-testid="stNotificationContentError"] {
+            background-color: var(--ad-alert-error-bg) !important;
+            color: var(--ad-alert-error-text) !important;
+        }
+        [data-testid="stAlert"]:has([data-testid="stAlertContentSuccess"]),
+        div[data-testid="stNotificationContentSuccess"] {
+            background-color: var(--ad-alert-success-bg) !important;
+            color: var(--ad-alert-success-text) !important;
+        }
+        .stAlert,
+        [data-baseweb="notification"] {
+            background-color: var(--ad-alert-info-bg) !important;
+            color: var(--ad-alert-info-text) !important;
+        }
+        [data-testid="stSpinner"] label,
+        [data-testid="stSpinner"] span {
+            color: var(--ad-text) !important;
+        }
+        [data-testid="stTooltipIcon"] {
             color: var(--ad-text-muted) !important;
         }
     """
