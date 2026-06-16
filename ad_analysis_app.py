@@ -36,7 +36,7 @@ os.environ.setdefault("PYTHONUTF8", "1")
 
 DATE_PATTERN = re.compile(r'^\d{4}[-/]\d{1,2}[-/]\d{1,2}')
 WEEKEND_LABEL_RE = re.compile(r'周末|weekend', re.I)
-WEEK_LABEL_RE = re.compile(r'^week(?:\s*\d+)?$', re.I)
+WEEK_LABEL_RE = re.compile(r'^week(?!\s*end)(?:\s+[\w.-]+|\s*\d+)?$', re.I)
 SKIP_ROW_LABEL_RE = re.compile(
     r'^(february?|january|march|april|may|june|july|august|'
     r'september|october|november|december|日期|date)$',
@@ -266,8 +266,12 @@ def is_weekend_label(val) -> bool:
     return bool(WEEKEND_LABEL_RE.search(s)) or "三日" in s
 
 
+def _normalize_summary_label(val) -> str:
+    return re.sub(r'\s+', ' ', str(val).strip())
+
+
 def is_week_label(val) -> bool:
-    """判断是否为「Week / Week 23」等周汇总行标签。"""
+    """判断是否为「Week / Week 23 / Week Try」等周汇总行标签。"""
     try:
         if val is None:
             return False
@@ -281,16 +285,43 @@ def is_week_label(val) -> bool:
     if is_valid_date(val):
         return False
 
-    s = str(val).strip()
+    s = _normalize_summary_label(val)
     if not s:
+        return False
+    if bool(WEEKEND_LABEL_RE.search(s)) or "三日" in s:
         return False
     return bool(WEEK_LABEL_RE.match(s))
 
 
 def parse_week_number(val):
-    """从 Week 标签解析周序号，纯 Week 返回 None。"""
-    m = re.match(r'^week\s*(\d+)$', str(val).strip(), re.I)
+    """从 Week 标签解析周序号；非 Week N 格式返回 None。"""
+    m = re.match(r'^week\s*(\d+)\s*$', _normalize_summary_label(val), re.I)
     return int(m.group(1)) if m else None
+
+
+def _collect_week_row_indices(raw) -> list:
+    return [i for i, val in enumerate(raw) if is_week_label(val)]
+
+
+def _collect_weekend_row_indices(raw) -> list:
+    return [i for i, val in enumerate(raw) if is_weekend_label(val)]
+
+
+def _finalize_summary_buckets(buckets: list, from_end_key: str) -> list:
+    """为汇总 bucket 补充序号，并按表格从新到旧排序（最新在最前）。"""
+    n = len(buckets)
+    for i, b in enumerate(buckets):
+        b["ordinal_index"] = i
+        b[from_end_key] = n - 1 - i
+    return sorted(buckets, key=lambda b: b[from_end_key])
+
+
+def _sort_week_buckets_newest_first(buckets: list) -> list:
+    return _finalize_summary_buckets(buckets, "week_index_from_end")
+
+
+def _sort_weekend_buckets_newest_first(buckets: list) -> list:
+    return _finalize_summary_buckets(buckets, "weekend_index_from_end")
 
 
 def infer_weekend_range(cleaned_df: pd.DataFrame, date_col, row_idx: int):
@@ -333,7 +364,6 @@ def get_weekend_buckets(sheets_dict: dict) -> list:
             return []
 
         buckets = []
-        bucket_index = 0
         for idx in range(len(cleaned_df)):
             val = cleaned_df.iloc[idx][date_col]
             if not is_weekend_label(val):
@@ -344,33 +374,20 @@ def get_weekend_buckets(sheets_dict: dict) -> list:
                 continue
 
             buckets.append({
-                "bucket_index": bucket_index,
-                "raw_label": str(val).strip(),
+                "raw_label": _normalize_summary_label(val),
+                "row_index": idx,
                 "start": fri,
                 "end": sun,
             })
-            bucket_index += 1
 
-        return buckets
+        return _sort_weekend_buckets_newest_first(buckets)
     except Exception as e:
         st.warning(f"⚠️ 扫描周末三日数据时出错：{e}")
         return []
 
 
-def _sort_week_buckets_newest_first(buckets: list) -> list:
-    """按表格位置降序：越靠下的 Week 行（通常越新）排在列表越前。"""
-    def sort_key(b):
-        week_num = b.get("week_number")
-        return (
-            b.get("row_index", 0),
-            week_num if week_num is not None else -1,
-        )
-
-    return sorted(buckets, key=sort_key, reverse=True)
-
-
 def get_week_buckets(sheets_dict: dict) -> list:
-    """扫描 Sheet 日期列中所有「Week / Week N」周汇总行。"""
+    """扫描 Sheet 日期列中所有 Week 周汇总行（含 Week Try 等变体）。"""
     try:
         source_df = get_shopify_df(sheets_dict)
         source_name = "Shopify"
@@ -392,9 +409,8 @@ def get_week_buckets(sheets_dict: dict) -> list:
         for idx, val in enumerate(cleaned_df[date_col]):
             if not is_week_label(val):
                 continue
-            label = str(val).strip()
+            label = _normalize_summary_label(val)
             buckets.append({
-                "bucket_index": len(buckets),
                 "raw_label": label,
                 "week_number": parse_week_number(label),
                 "row_index": idx,
@@ -409,16 +425,37 @@ def get_week_buckets(sheets_dict: dict) -> list:
 def _filter_weekend_rows(cleaned_df: pd.DataFrame, date_col, bucket: dict) -> pd.DataFrame:
     """在各 Sheet 中定位与 bucket 对应的「周末三日」汇总行。"""
     raw = cleaned_df[date_col]
-    weekend_indices = [i for i, val in enumerate(raw) if is_weekend_label(val)]
+    weekend_indices = _collect_weekend_row_indices(raw)
+    if not weekend_indices:
+        return pd.DataFrame()
 
-    bucket_idx = bucket["bucket_index"]
-    if bucket_idx < len(weekend_indices):
+    target_label = _normalize_summary_label(bucket.get("raw_label", ""))
+    if target_label:
+        label_indices = [
+            i for i in weekend_indices
+            if _normalize_summary_label(raw.iloc[i]) == target_label
+        ]
+        if len(label_indices) == 1:
+            return cleaned_df.iloc[[label_indices[0]]]
+        if len(label_indices) > 1:
+            ord_from_end = bucket.get("weekend_index_from_end", 0)
+            if ord_from_end < len(label_indices):
+                return cleaned_df.iloc[[label_indices[-(ord_from_end + 1)]]]
+
+    fri, sun = bucket.get("start"), bucket.get("end")
+    if fri and sun:
+        for i in weekend_indices:
+            inferred = infer_weekend_range(cleaned_df, date_col, i)
+            if inferred[0] == fri and inferred[1] == sun:
+                return cleaned_df.iloc[[i]]
+
+    ord_from_end = bucket.get("weekend_index_from_end")
+    if ord_from_end is not None and ord_from_end < len(weekend_indices):
+        return cleaned_df.iloc[[weekend_indices[-(ord_from_end + 1)]]]
+
+    bucket_idx = bucket.get("ordinal_index", bucket.get("bucket_index"))
+    if bucket_idx is not None and bucket_idx < len(weekend_indices):
         return cleaned_df.iloc[[weekend_indices[bucket_idx]]]
-
-    label = bucket["raw_label"]
-    label_matches = cleaned_df[raw.astype(str).str.strip() == label]
-    if bucket_idx < len(label_matches):
-        return label_matches.iloc[[bucket_idx]]
 
     return pd.DataFrame()
 
@@ -426,22 +463,47 @@ def _filter_weekend_rows(cleaned_df: pd.DataFrame, date_col, bucket: dict) -> pd
 def _filter_week_rows(cleaned_df: pd.DataFrame, date_col, bucket: dict) -> pd.DataFrame:
     """在各 Sheet 中定位与 bucket 对应的「Week」周汇总行。"""
     raw = cleaned_df[date_col]
-    week_indices = [i for i, val in enumerate(raw) if is_week_label(val)]
-
-    bucket_idx = bucket["bucket_index"]
-    if bucket_idx < len(week_indices):
-        return cleaned_df.iloc[[week_indices[bucket_idx]]]
-
-    label = bucket["raw_label"]
-    label_matches = cleaned_df[raw.astype(str).str.strip().str.lower() == label.lower()]
-    if not label_matches.empty:
-        return label_matches.iloc[[0]]
+    week_indices = _collect_week_row_indices(raw)
+    if not week_indices:
+        return pd.DataFrame()
 
     week_num = bucket.get("week_number")
     if week_num is not None:
-        for i, val in enumerate(raw):
-            if is_week_label(val) and parse_week_number(val) == week_num:
-                return cleaned_df.iloc[[i]]
+        num_matches = [
+            i for i in week_indices
+            if parse_week_number(raw.iloc[i]) == week_num
+        ]
+        if len(num_matches) == 1:
+            return cleaned_df.iloc[[num_matches[0]]]
+        if len(num_matches) > 1:
+            ord_from_end = bucket.get("week_index_from_end", 0)
+            if ord_from_end < len(num_matches):
+                return cleaned_df.iloc[[num_matches[-(ord_from_end + 1)]]]
+
+    target_label = _normalize_summary_label(bucket.get("raw_label", ""))
+    if target_label:
+        label_indices = [
+            i for i in week_indices
+            if _normalize_summary_label(raw.iloc[i]).lower() == target_label.lower()
+        ]
+        if len(label_indices) == 1:
+            return cleaned_df.iloc[[label_indices[0]]]
+        if len(label_indices) > 1:
+            ord_from_end = bucket.get("week_index_from_end", 0)
+            if ord_from_end < len(label_indices):
+                return cleaned_df.iloc[[label_indices[-(ord_from_end + 1)]]]
+
+    source_row = bucket.get("row_index")
+    if source_row is not None and source_row in week_indices:
+        return cleaned_df.iloc[[source_row]]
+
+    ord_from_end = bucket.get("week_index_from_end")
+    if ord_from_end is not None and ord_from_end < len(week_indices):
+        return cleaned_df.iloc[[week_indices[-(ord_from_end + 1)]]]
+
+    bucket_idx = bucket.get("ordinal_index", bucket.get("bucket_index"))
+    if bucket_idx is not None and bucket_idx < len(week_indices):
+        return cleaned_df.iloc[[week_indices[bucket_idx]]]
 
     return pd.DataFrame()
 
@@ -2647,10 +2709,11 @@ def main():
             if not valid_dates:
                 st.warning("⚠️ 未找到标准日期，请检查数据。")
             else:
+                date_options = list(reversed(valid_dates))
                 selected_date = st.selectbox(
                     "选择日期",
-                    options=valid_dates,
-                    index=len(valid_dates) - 1,
+                    options=date_options,
+                    index=0,
                     format_func=lambda d: d.strftime("%Y-%m-%d (%a)"),
                 )
                 start_date = end_date = selected_date
@@ -2693,9 +2756,10 @@ def main():
 
         elif date_mode == "week":
             def _format_week_bucket(b):
+                label = b.get("raw_label", "Week")
                 if b.get("week_number") is not None:
                     return f"Week {b['week_number']}（周汇总）"
-                return f"{b['raw_label']}（周汇总）"
+                return f"{label}（周汇总）"
 
             week_bucket = st.selectbox(
                 "选择 Week 周汇总",
@@ -2715,7 +2779,7 @@ def main():
             weekend_bucket = st.selectbox(
                 "选择周末三日",
                 options=weekend_buckets,
-                index=len(weekend_buckets) - 1,
+                index=0,
                 format_func=_format_weekend_bucket,
             )
             start_date = weekend_bucket["start"]
