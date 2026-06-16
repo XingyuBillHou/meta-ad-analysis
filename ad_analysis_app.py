@@ -890,7 +890,7 @@ def get_default_range_for_report(report_type: str, valid_dates: list) -> tuple:
 # 模块四：AI 分析报告生成引擎
 # ============================================================
 
-def build_system_prompt(report_type: str, date_mode: str) -> str:
+def build_system_prompt(report_type: str, date_mode: str, sectional: bool = False) -> str:
     if date_mode == "single":
         time_note = (
             f"这是一份【{report_type}】，数据为**单日**快照，"
@@ -923,7 +923,7 @@ def build_system_prompt(report_type: str, date_mode: str) -> str:
             f"（上升/下降/平稳/剧烈波动），并明确指出关键的转折点或异常日期。"
         )
 
-    return f"""# 角色设定
+    role_block = f"""# 角色设定
 你是一位拥有十年以上经验的顶尖跨境电商品牌 CMO（首席营销官），尤其精通 Meta、Google、AppLovin 等多渠道效果广告的数据分析与预算决策，风格数据驱动、直击要害、敢于给出明确结论和行动建议。
 
 # 当前任务
@@ -934,7 +934,18 @@ def build_system_prompt(report_type: str, date_mode: str) -> str:
 - 数据来源可能包括：Shopify（电商大盘销售数据）、Google（Google Ads 投放数据）、Axon(AppLovin)（AppLovin 投放数据），以及多个 Meta 广告账号（如 WearNuage、Nuage Bra 等）。
 - 每个渠道的数据是一份「记录列表」，每条记录对应一天（或一行）的原始字段，字段名以实际数据为准（可能包含消耗/Spend/Cost、曝光、点击、转化、ROAS、CPA、销售额/Revenue/Sales、订单数等）。
 - 若某渠道在该区间无数据，会用文字注明"该渠道此区间无数据"，请正常处理，不要编造数据，也不要因此中断对其他渠道的分析。
+"""
 
+    if sectional:
+        return role_block + """
+# 输出要求（分节模式，必须遵守）
+- 报告将分三次调用生成；**每次只写用户消息指定的那一个章节**。
+- **严禁**输出其他章节，**严禁**重复输出完整报告或重复章节标题。
+- 第二章的表格由系统自动生成，你只需写文字洞察（如 ### 2.3），不要输出 Markdown 表格。
+- 全文使用简体中文；所有结论必须引用原始数据中的具体数字，禁止空泛描述。
+"""
+
+    return role_block + """
 # 输出结构要求（必须严格按以下 Markdown 结构输出，使用简体中文）
 
 ## 一、大盘纵览（Executive Summary）
@@ -1603,8 +1614,108 @@ def _request_chat_completion(
     raise RuntimeError("API 多次重试后仍失败")
 
 
+REPORT_SECTION_HEADER_RE = re.compile(
+    r'^##\s*(一|二|三)[、\.]?\s*.+$',
+    re.MULTILINE,
+)
+SECTION_NUM_MAP = {"一": 1, "二": 2, "三": 3}
+
+
+def _split_report_sections(text: str) -> dict:
+    """将 Markdown 按「## 一/二/三」主章节拆分为 {1: body, 2: body, 3: body}。"""
+    if not text:
+        return {}
+
+    matches = list(REPORT_SECTION_HEADER_RE.finditer(text))
+    if not matches:
+        return {}
+
+    sections = {}
+    for i, match in enumerate(matches):
+        num = SECTION_NUM_MAP.get(match.group(1))
+        if num is None:
+            continue
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        if body:
+            sections[num] = body
+    return sections
+
+
+def _strip_leading_section_header(text: str) -> str:
+    lines = (text or "").split("\n")
+    if lines and lines[0].strip().startswith("##"):
+        return "\n".join(lines[1:]).strip()
+    return (text or "").strip()
+
+
+def _extract_section_body(content: str, section_num: int) -> str:
+    """从模型输出中提取指定章节正文；若模型返回完整报告则只取对应一节。"""
+    text = (content or "").strip()
+    if not text:
+        return ""
+
+    sections = _split_report_sections(text)
+    if section_num in sections:
+        return sections[section_num]
+
+    if not sections:
+        return _strip_leading_section_header(text)
+    return ""
+
+
+def _strip_markdown_tables(text: str) -> str:
+    """移除 Markdown 表格块（渠道表格由代码生成，模型不应重复）。"""
+    lines = (text or "").split("\n")
+    kept = []
+    in_table = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            in_table = True
+            continue
+        if in_table and not stripped:
+            in_table = False
+            continue
+        if in_table:
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _extract_channel_analysis(content: str) -> str:
+    """提取第二章中的文字洞察，去掉重复表格与主章节标题。"""
+    body = _extract_section_body(content, 2) or _strip_leading_section_header(content)
+    body = _strip_markdown_tables(body)
+
+    subsection_match = re.search(
+        r'(###\s*2\.3[^\n]*(?:\n(?!##).*)*)',
+        body,
+        re.DOTALL,
+    )
+    if subsection_match:
+        return subsection_match.group(1).strip()
+
+    body = re.sub(r'###\s*2\.[12][^\n]*', '', body).strip()
+    body = _strip_leading_section_header(body)
+    if not body:
+        return ""
+    if not body.startswith("###"):
+        body = "### 2.3 渠道洞察与诊断\n\n" + body
+    return body
+
+
+def _normalize_section_output(title: str, content: str, section_num: int) -> str:
+    body = _extract_section_body(content, section_num)
+    if not body:
+        return f"{title}\n\n（该章节生成失败，请重试。）"
+    return f"{title}\n\n{body}"
+
+
 REPORT_SECTIONS = [
     {
+        "num": 1,
         "title": "## 一、大盘纵览（Executive Summary）",
         "instruction": (
             "请**只写第一章**「大盘纵览（Executive Summary）」。\n"
@@ -1616,6 +1727,7 @@ REPORT_SECTIONS = [
         "min_chars": 180,
     },
     {
+        "num": 2,
         "id": "channel",
         "title": "## 二、渠道表现拆解",
         "instruction": (
@@ -1630,6 +1742,7 @@ REPORT_SECTIONS = [
         "skip_title": True,
     },
     {
+        "num": 3,
         "title": "## 三、下一步行动指令（Action Items）",
         "instruction": (
             "请**只写第三章**「下一步行动指令（Action Items）」。\n"
@@ -1641,17 +1754,6 @@ REPORT_SECTIONS = [
         "min_chars": 280,
     },
 ]
-
-
-def _normalize_section_output(title: str, content: str) -> str:
-    text = (content or "").strip()
-    if not text:
-        return f"{title}\n\n（该章节生成失败，请重试。）"
-    if not text.startswith("##"):
-        text = f"{title}\n\n{text}"
-    elif title.split("（")[0] not in text.split("\n")[0]:
-        text = f"{title}\n\n{text}"
-    return text
 
 
 def generate_report(
@@ -1741,18 +1843,16 @@ def generate_report(
                         })
 
                 if section.get("id") == "channel" and extracted_data:
-                    analysis = content.strip()
-                    if analysis.startswith("##"):
-                        analysis = analysis.split("\n", 1)[-1].strip()
-                    sections_out.append(
-                        channel_tables + "\n\n" + (
-                            analysis if analysis.startswith("###")
-                            else "### 2.3 渠道洞察与诊断\n\n" + analysis
-                        )
-                    )
+                    analysis = _extract_channel_analysis(content)
+                    if analysis:
+                        sections_out.append(f"{channel_tables}\n\n{analysis}")
+                    else:
+                        sections_out.append(channel_tables)
                 else:
                     sections_out.append(
-                        _normalize_section_output(section["title"], content)
+                        _normalize_section_output(
+                            section["title"], content, section["num"]
+                        )
                     )
 
         return "\n\n".join(sections_out)
@@ -2380,7 +2480,7 @@ def main():
                                 st.text(f"（展示失败：{e}）")
 
                 with st.spinner("AI 正在分三节生成完整报告（约 2~5 分钟）..."):
-                    system_prompt = build_system_prompt(report_type, date_mode)
+                    system_prompt = build_system_prompt(report_type, date_mode, sectional=True)
                     user_content = build_user_content(extracted_data, date_info, date_mode)
                     report = generate_report(
                         api_key=api_key,
