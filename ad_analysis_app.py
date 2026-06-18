@@ -774,7 +774,7 @@ def _open_excel_workbook(uploaded_file):
 
 
 # 未在投放的账号 Sheet，读取 Excel 时自动跳过
-SKIPPED_SHEET_NAMES = frozenset({"nuage2026", "nuage wear"})
+SKIPPED_SHEET_NAMES = frozenset({"nuage2026", "nuage wear", "nuage bra"})
 
 
 def _is_skipped_sheet(sheet_name: str) -> bool:
@@ -1152,7 +1152,7 @@ def build_system_prompt(report_type: str, date_mode: str, sectional: bool = Fals
 {time_note}
 
 # 数据说明
-- 数据来源可能包括：Shopify（电商大盘销售数据）、Google（Google Ads 投放数据）、Axon(AppLovin)（AppLovin 投放数据），以及多个 Meta 广告账号（如 WearNuage、Nuage Bra 等）。
+- 数据来源可能包括：Shopify（电商大盘销售数据）、Google（Google Ads 投放数据）、Axon(AppLovin)（AppLovin 投放数据），以及 Meta 广告账号（如 WearNuage 等；已停投账号 Sheet 会自动跳过）。
 - 每个渠道的数据是一份「记录列表」，每条记录对应一天（或一行）的原始字段，字段名以实际数据为准（可能包含消耗/Spend/Cost、曝光、点击、转化、ROAS、CPA、销售额/Revenue/Sales、订单数等）。
 - 若某渠道在该区间无数据，会用文字注明"该渠道此区间无数据"，请正常处理，不要编造数据，也不要因此中断对其他渠道的分析。
 """
@@ -1194,7 +1194,7 @@ def build_system_prompt(report_type: str, date_mode: str, sectional: bool = Fals
 # 硬性要求（必须遵守，否则视为失败）
 - **必须完整输出三个章节**，不得在中途停止；第二章表格必须填写完整，不能只写表头。
 - **所有结论必须引用原始数据中的具体数字**（消耗、ROAS、ROI、销售额、订单数等），禁止空泛描述。
-- 第二章表格至少包含：Shopify 大盘、Google、Axon(AppLovin)、WearNuage、Nuage Bra 等所有有数据的渠道。
+- 第二章表格至少包含：Shopify 大盘、Google、Axon(AppLovin)、WearNuage 等所有有数据的渠道。
 - 第三章至少给出 **3 条以上** 具体行动建议，每条含渠道名 + 量化调整幅度。
 - 报告总篇幅不少于 **800 字**。
 """
