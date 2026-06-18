@@ -1,0 +1,14 @@
+---
+description: After local changes, commit and push without asking
+alwaysApply: true
+---
+
+# Auto push after local edits
+
+When you finish making changes in this project locally:
+
+1. Commit with a concise message describing the why.
+2. Push to `origin main` immediately.
+3. Do not ask the user for confirmation before pushing.
+
+If push fails (network/auth), retry once; if still failing, report the error.
